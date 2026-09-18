@@ -43,7 +43,7 @@ function st(s) {
   return { vi: vi || '—', zh: zh || (hit ? hit[2] : ''), cls: hit ? hit[1] : 'none' };
 }
 const ICON_SCAN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 12h8"/></svg>';
-const LOGO = '<svg viewBox="0 0 64 40" aria-hidden="true"><path d="M13 3 27 37H1Z"/><path d="M22 4h7l11 33h-7Z"/><path d="M36 4h27L47 37Z"/></svg>';
+const LOGO = '<img src="icons/logo.png" alt="" aria-hidden="true">';
 
 /* ===================== Lớp dữ liệu (API Apps Script) =====================
    Định dạng theo Code.gs phiên 2: {ok:true,data} | {ok:false,error}
