@@ -88,16 +88,23 @@ const firstUrl = u => { const s = String(u || '').trim().split(/\s+/)[0] || ''; 
 const normM = m => ({ ...m, ma: String(m.ma), hang: m.hangSX, nam: m.namLapDat, anh: imgUrl(m.anh), taiLieu: firstUrl(m.taiLieu) });
 const normR = r => ({ ...r, nguoi: r.nguoiThucHien, gioDung: r.thoiGianDung, anh: (r.anh || []).map(imgUrl).filter(Boolean) });
 const normP = p => ({ ...p, lanCuoi: p.ngayGanNhat });
+const normB = b => ({ ...b, anh: (b.anh || []).map(imgUrl).filter(Boolean) });
 
 const api = {
   list: async () => (await get('list')).map(normM),
   async machine(ma) {
     const d = await get('machine', { ma });
-    return { machine: normM(d.machine), repairs: (d.repairs || []).map(normR), maintenance: (d.maintenance || []).map(normP), contracts: d.contracts || [] };
+    return {
+      machine: normM(d.machine), repairs: (d.repairs || []).map(normR),
+      maintenance: (d.maintenance || []).map(normP),
+      maintHistory: (d.maintHistory || []).map(normB),
+      contracts: d.contracts || []
+    };
   },
   dashboard: () => get('dashboard'),
   contracts: () => get('contracts'),
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
+  completeMaint: (pin, data) => post({ action: 'completeMaint', pin, data }),
   uploadPhoto: (pin, ma, base64) => post({ action: 'uploadPhoto', pin, ma, mimeType: 'image/jpeg', base64 })
 };
 
@@ -130,6 +137,9 @@ function due(x) {
   return { denHan, d, cls: 'ok', html: bi(`Hạn ${fmtDate(denHan)}`, `到期 ${fmtDate(denHan)}`) };
 }
 const byRecent = (a, b) => String(b.ngay).localeCompare(String(a.ngay)) || String(b.maPhieu).localeCompare(String(a.maPhieu));
+/* Ô Sheets ghi "Hoàn thành / 已完成" → tách hai dòng */
+const viZh = s => { const [vi, zh] = String(s || '').split(/\s*\/\s*/); return { vi: vi || '—', zh: zh || '' }; };
+const sameText = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 
 /* ===================== Hợp đồng bảo trì: nhãn hạn ===================== */
 /* muc do máy chủ tính: het = đã hết hạn, sap = trong ngưỡng báo trước,
@@ -246,6 +256,7 @@ async function pageMachine(ma) {
   }
   const { machine: m, repairs, maintenance } = r.data, s = st(m.trangThai);
   const hds = r.data.contracts || [];
+  const lsBt = r.data.maintHistory || [];
   const reps = [...repairs].sort(byRecent);
   const pms = maintenance.map(x => ({ ...x, due: due(x) })).sort((a, b) => a.due.d - b.due.d);
   const tongGio = reps.reduce((t, x) => t + (Number(x.gioDung) || 0), 0);
@@ -280,9 +291,26 @@ async function pageMachine(ma) {
       <h2 class="sec">${bi('Bảo trì định kỳ', '定期保养')}</h2>
       ${pms.length ? `<ul class="pm card">${pms.map(x => `<li>
         <span><b>${esc(x.hangMuc)}</b><br><span class="s">${bi(`Chu kỳ ${esc(x.chuKy)} ngày, lần cuối ${fmtDate(x.lanCuoi) || '—'}`, `周期 ${esc(x.chuKy)} 天，上次 ${fmtDate(x.lanCuoi) || '—'}`)}</span></span>
-        <span class="badge ${x.due.cls}">${x.due.html}</span></li>`).join('')}</ul>`
+        <span class="pm-act"><span class="badge ${x.due.cls}">${x.due.html}</span>
+          <a class="btn mini" href="#/bao-tri/${encodeURIComponent(m.ma)}/${encodeURIComponent(x.hangMuc)}">✓ ${bi('Đã làm', '已完成')}</a></span></li>`).join('')}</ul>`
         : `<p class="empty card">${bi('Chưa có hạng mục bảo trì', '暂无保养项目')}</p>`}
     </section>
+    ${lsBt.length ? `<section class="block">
+      <h2 class="sec">${bi('Lịch sử bảo trì', '保养记录')}
+        <small>${bi(`${lsBt.length} lần gần đây`, `最近 ${lsBt.length} 次`)}</small></h2>
+      <ol class="timeline">${lsBt.map((x, i) => { const kq = viZh(x.ketQua); const xau = /có vấn đề|有问题/i.test(x.ketQua); return `<li${i >= 5 ? ' class="more-bt" hidden' : ''}>
+        <div class="head">${esc(fmtDate(x.ngay))} <span>${esc(x.maLan)}</span></div>
+        <dl>
+          <dt>${bi('Hạng mục', '项目')}</dt><dd>${esc(x.hangMuc)}</dd>
+          <dt>${bi('Kết quả', '结果')}</dt><dd><span class="badge ${xau ? 'warn' : 'ok'}">${bi(esc(kq.vi), esc(kq.zh))}</span></dd>
+          ${x.noiDung ? `<dt>${bi('Đã làm', '工作内容')}</dt><dd>${esc(x.noiDung)}</dd>` : ''}
+          ${x.vatTu ? `<dt>${bi('Vật tư', '更换备件')}</dt><dd>${esc(x.vatTu)}</dd>` : ''}
+          <dt>${bi('Người làm', '执行人')}</dt><dd>${esc(x.nguoi)}</dd>
+          ${x.ghiChu ? `<dt>${bi('Ghi chú', '备注')}</dt><dd>${esc(x.ghiChu)}</dd>` : ''}
+        </dl>
+        ${x.anh.length ? `<div class="thumbs">${x.anh.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Ảnh bảo trì ${esc(x.maLan)}" loading="lazy" referrerpolicy="no-referrer"></a>`).join('')}</div>` : ''}</li>`; }).join('')}</ol>
+      ${lsBt.length > 5 ? `<button class="btn block" id="btMore">${bi(`Xem thêm ${lsBt.length - 5} lần`, `查看更多 ${lsBt.length - 5} 次`)}</button>` : ''}
+    </section>` : ''}
     ${hds.length ? `<section class="block">
       <h2 class="sec">${bi('Hợp đồng bảo trì', '维保合同')}<small>${bi('thuê ngoài', '外包')}</small></h2>
       <div class="hd-list">${hds.map(hdCard).join('')}</div>
@@ -304,15 +332,62 @@ async function pageMachine(ma) {
         : `<p class="empty card">${bi('Chưa có phiếu sửa chữa', '暂无维修记录')}</p>`}
     </section>
     <div class="sticky-cta"><a class="btn primary block" href="#/phieu/${encodeURIComponent(m.ma)}">+ ${bi('Tạo phiếu sửa chữa', '新建维修单')}</a></div>`;
+  const more = $('#btMore');
+  if (more) more.onclick = () => { view.querySelectorAll('.more-bt').forEach(el => { el.hidden = false; }); more.remove(); };
+}
+
+/* ============ Ảnh trong form (dùng chung cho phiếu sửa chữa + xác nhận bảo trì) ============ */
+const MAX_PHOTOS = 3;
+function photoField() {
+  const photos = [];   // {file, preview, url (sau khi tải lên)}
+  const html = `<div class="field"><span>${bi(`Ảnh (tối đa ${MAX_PHOTOS})`, `照片（最多 ${MAX_PHOTOS} 张）`)}</span>
+      <div class="photo-in"><label class="btn" id="addPhoto">📷 ${bi('Chụp / chọn ảnh', '拍照 / 选择照片')}<input type="file" id="file" accept="image/*" capture="environment" hidden></label><span id="prevs" class="photo-in"></span></div></div>`;
+  const draw = () => {
+    $('#prevs').innerHTML = photos.map((p, i) => `<span class="pthumb"><img src="${p.preview}" alt=""><button type="button" data-i="${i}" aria-label="Bỏ ảnh">×</button></span>`).join('');
+    $('#addPhoto').hidden = photos.length >= MAX_PHOTOS;
+  };
+  const bind = () => {
+    const fileIn = $('#file');
+    fileIn.onchange = () => {
+      const file = fileIn.files[0];
+      fileIn.value = '';
+      if (!file || photos.length >= MAX_PHOTOS) return;
+      photos.push({ file, preview: URL.createObjectURL(file) });
+      draw();
+    };
+    $('#prevs').onclick = e => { const i = e.target.dataset.i; if (i != null) { photos.splice(+i, 1); draw(); } };
+    draw();
+  };
+  /* Tải ảnh chưa tải lên; nhớ URL để lần gửi lại không tải trùng */
+  const upload = async (pin, ma, setBtn) => {
+    for (let i = 0; i < photos.length; i++) {
+      if (photos[i].url) continue;
+      setBtn(bi(`Đang tải ảnh ${i + 1}/${photos.length}…`, `正在上传照片 ${i + 1}/${photos.length}…`));
+      const b64 = await compressImage(photos[i].file);
+      photos[i].url = (await api.uploadPhoto(pin, ma, b64)).url;
+    }
+    return photos.map(p => p.url);
+  };
+  return { html, bind, upload };
+}
+/* Thông báo lỗi khi gửi form (step = 'photo' | 'save') */
+function sendErr(e, step) {
+  if (e.code === 'PIN') {
+    return /quá nhiều/.test(e.message) ? bi('Sai PIN quá nhiều lần, thử lại sau 10 phút', 'PIN码错误次数过多，请10分钟后重试')
+      : e.message === 'Sai mã PIN' ? bi('Sai mã PIN', 'PIN码错误') : bi(esc(e.message), '服务器未设置PIN');
+  }
+  if (e.code === 'NET' && step === 'save') return bi('Không nhận được phản hồi từ máy chủ. Mở lại lý lịch máy kiểm tra đã lưu chưa trước khi gửi lại, tránh ghi trùng.', '未收到服务器响应。重新提交前请先查看设备记录，避免重复。');
+  if (e.code === 'NET') return bi('Không gửi được. Kiểm tra mạng rồi thử lại.', '发送失败，请检查网络后重试。');
+  return bi('Gửi không thành công: ' + esc(e.message), '提交失败');
 }
 
 /* ===================== Form phiếu sửa chữa ===================== */
-const MAX_PHOTOS = 3;
 function pageRepair(ma) {
   const draftKey = 'tb3_draft_' + ma.toUpperCase();
   const draft = store.get(draftKey, {});
   const val = (k, d = '') => esc(draft[k] ?? d);
   const f = (vi, zh, input, req) => `<label class="field"><span>${bi(vi + (req ? ' <b class="req">*</b>' : ''), zh)}</span>${input}</label>`;
+  const ph = photoField();
   view.innerHTML = `
     <a class="back" href="#/may/${encodeURIComponent(ma)}">‹ ${bi('Quay lại máy', '返回设备')}</a>
     <h1 style="margin:0 0 4px">${bi('Phiếu sửa chữa', '维修单')}</h1>
@@ -327,27 +402,14 @@ function pageRepair(ma) {
       ${f('Biện pháp xử lý', '处理措施', `<textarea name="bienPhap" required maxlength="2000">${val('bienPhap')}</textarea>`, 1)}
       ${f('Vật tư thay thế', '更换备件', `<input name="vatTu" maxlength="500" placeholder="VD: Vòng bi 6205 x2" value="${val('vatTu')}">`)}
       ${f('Người thực hiện', '执行人', `<input name="nguoiThucHien" required maxlength="100" autocomplete="name" value="${val('nguoiThucHien', store.get('tb_nguoi', ''))}">`, 1)}
-      <div class="field"><span>${bi(`Ảnh (tối đa ${MAX_PHOTOS})`, `照片（最多 ${MAX_PHOTOS} 张）`)}</span>
-        <div class="photo-in"><label class="btn" id="addPhoto">📷 ${bi('Chụp / chọn ảnh', '拍照 / 选择照片')}<input type="file" id="file" accept="image/*" capture="environment" hidden></label><span id="prevs" class="photo-in"></span></div></div>
+      ${ph.html}
       ${f('Mã PIN', 'PIN码', '<input type="password" name="pin" required inputmode="numeric" autocomplete="off" maxlength="12">', 1)}
       <p class="note">${bi('Phiếu đã gửi không sửa/xóa được trên app (lưu hồ sơ truy xuất BRCGS).', '维修单提交后无法在应用内修改/删除（BRCGS 追溯记录）。')}</p>
       <div id="err" role="alert"></div>
       <button class="btn primary block" id="send">${bi('Gửi phiếu', '提交')}</button>
     </form>`;
-  const form = $('#rf'), err = $('#err'), btn = $('#send'), fileIn = $('#file');
-  const photos = []; // {file, url (sau khi tải lên)}
-  const drawPhotos = () => {
-    $('#prevs').innerHTML = photos.map((p, i) => `<span class="pthumb"><img src="${p.preview}" alt=""><button type="button" data-i="${i}" aria-label="Bỏ ảnh">×</button></span>`).join('');
-    $('#addPhoto').hidden = photos.length >= MAX_PHOTOS;
-  };
-  fileIn.onchange = () => {
-    const file = fileIn.files[0];
-    fileIn.value = '';
-    if (!file || photos.length >= MAX_PHOTOS) return;
-    photos.push({ file, preview: URL.createObjectURL(file) });
-    drawPhotos();
-  };
-  $('#prevs').onclick = e => { const i = e.target.dataset.i; if (i != null) { photos.splice(+i, 1); drawPhotos(); } };
+  const form = $('#rf'), err = $('#err'), btn = $('#send');
+  ph.bind();
   form.oninput = () => { const { pin, ...d } = Object.fromEntries(new FormData(form)); store.set(draftKey, d); };
 
   const setBtn = html => { btn.innerHTML = html; };
@@ -362,32 +424,125 @@ function pageRepair(ma) {
     btn.disabled = true;
     let step = 'photo';
     try {
-      for (let i = 0; i < photos.length; i++) {
-        if (photos[i].url) continue;
-        setBtn(bi(`Đang tải ảnh ${i + 1}/${photos.length}…`, `正在上传照片 ${i + 1}/${photos.length}…`));
-        const b64 = await compressImage(photos[i].file);
-        photos[i].url = (await api.uploadPhoto(pin, ma, b64)).url;
-      }
+      const anh = await ph.upload(pin, ma, setBtn);
       step = 'save';
       setBtn(bi('Đang gửi phiếu…', '正在提交…'));
-      const r = await api.addRepair(pin, { ...d, ma, nguoiNhap: d.nguoiThucHien, anh: photos.map(p => p.url) });
+      const r = await api.addRepair(pin, { ...d, ma, nguoiNhap: d.nguoiThucHien, anh });
       store.set('tb_nguoi', d.nguoiThucHien);
       store.del(draftKey);
       store.del('tb3_m_' + ma.toUpperCase());
       view.innerHTML = `<div class="done"><p>${bi('Đã lưu phiếu sửa chữa', '维修单已保存')}</p><span class="plate">${esc(r.maPhieu)}</span>
         <a class="btn primary" href="#/may/${encodeURIComponent(ma)}">${bi('Xem lý lịch máy', '查看设备履历')}</a></div>`;
     } catch (e2) {
-      let html;
-      if (e2.code === 'PIN') html = /quá nhiều/.test(e2.message) ? bi('Sai PIN quá nhiều lần, thử lại sau 10 phút', 'PIN错误次数过多，请10分钟后重试') : e2.message === 'Sai mã PIN' ? bi('Sai mã PIN', 'PIN码错误') : bi(esc(e2.message), '服务器未设置PIN');
-      else if (e2.code === 'NET' && step === 'save') html = bi('Không nhận được phản hồi từ máy chủ. Mở lịch sử máy kiểm tra phiếu đã lưu chưa trước khi gửi lại, tránh trùng phiếu.', '未收到服务器响应。重新提交前请先查看设备记录，避免重复。');
-      else if (e2.code === 'NET') html = bi('Không gửi được. Kiểm tra mạng rồi thử lại.', '发送失败，请检查网络后重试。');
-      else html = bi('Gửi không thành công: ' + esc(e2.message), '提交失败');
-      err.innerHTML = msgBad(html);
+      err.innerHTML = msgBad(sendErr(e2, step));
     } finally {
       if (btn.isConnected) { btn.disabled = false; setBtn(bi('Gửi phiếu', '提交')); }
     }
   };
-  drawPhotos();
+}
+
+/* ===================== Xác nhận đã bảo trì (phiên 5) ===================== */
+const KET_QUA = [
+  ['Hoàn thành / 已完成', '✓', 'Hoàn thành', '已完成'],
+  ['Hoàn thành, có vấn đề / 完成但有问题', '⚠', 'Hoàn thành, có vấn đề', '完成但有问题'],
+];
+async function pageMaintDone(ma, hangMuc) {
+  loading();
+  const MA = String(ma).toUpperCase();
+  let r;
+  try { r = await fetchCached('m_' + MA, () => api.machine(ma)); }
+  catch (e) {
+    if (e.code !== 'NOT_FOUND') return errorBox(e);
+    view.innerHTML = `<div class="empty"><p class="plate">${esc(MA)}</p><p>${bi('Không tìm thấy máy có mã này', '未找到该编号的设备')}</p><a class="btn" href="#/">${bi('Về danh sách', '返回列表')}</a></div>`;
+    return;
+  }
+  const m = r.data.machine;
+  const item = (r.data.maintenance || []).find(x => sameText(x.hangMuc, hangMuc));
+  if (!item) {
+    view.innerHTML = `<div class="empty"><p class="plate">${esc(MA)}</p>
+      <p>${bi('Không còn hạng mục bảo trì "' + esc(hangMuc) + '" của máy này. Kiểm tra tab BaoTri trong Google Sheets.', '本设备已无保养项目"' + esc(hangMuc) + '"，请检查 Google 表格 BaoTri 页。')}</p>
+      <a class="btn" href="#/may/${encodeURIComponent(ma)}">${bi('Về trang máy', '返回设备')}</a></div>`;
+    return;
+  }
+  const d0 = due(item);
+  const draftKey = 'tb3_bt_' + MA + '|' + item.hangMuc;
+  const draft = store.get(draftKey, {});
+  const val = (k, d = '') => esc(draft[k] ?? d);
+  const f = (vi, zh, input, req) => `<label class="field"><span>${bi(vi + (req ? ' <b class="req">*</b>' : ''), zh)}</span>${input}</label>`;
+  const ph = photoField();
+  const kqCu = draft.ketQua || KET_QUA[0][0];
+  view.innerHTML = `
+    <a class="back" href="#/may/${encodeURIComponent(ma)}">‹ ${bi('Quay lại máy', '返回设备')}</a>
+    <h1 style="margin:0 0 4px">${bi('Xác nhận đã bảo trì', '确认已保养')}</h1>
+    <p><span class="plate">${esc(m.ma)}</span> ${esc(m.ten)}</p>
+    <div class="card bt-head">
+      <b>${esc(item.hangMuc)}</b>
+      <span class="s">${bi(`Chu kỳ ${esc(item.chuKy)} ngày · lần cuối ${fmtDate(item.lanCuoi) || '—'}`, `周期 ${esc(item.chuKy)} 天 · 上次 ${fmtDate(item.lanCuoi) || '—'}`)}</span>
+      <span class="badge ${d0.cls}">${d0.html}</span>
+    </div>
+    <form class="form" id="bf" novalidate>
+      ${f('Ngày làm', '保养日期', `<input type="date" name="ngay" required value="${val('ngay', today())}" max="${today()}">`, 1)}
+      <div class="field"><span>${bi('Kết quả <b class="req">*</b>', '结果')}</span>
+        <div class="picks2" id="kq">${KET_QUA.map(([v, ic, vi, zh]) => `<label class="pick${v === kqCu ? ' on' : ''}">
+          <input type="radio" name="ketQua" value="${esc(v)}" ${v === kqCu ? 'checked' : ''}><span class="ic">${ic}</span>${bi(vi, zh)}</label>`).join('')}</div></div>
+      ${f('Công việc đã làm', '工作内容', `<textarea name="noiDung" maxlength="2000" placeholder="VD: Tra mỡ ổ trục, siết lại bu lông">${val('noiDung')}</textarea>`)}
+      ${f('Vật tư thay thế', '更换备件', `<input name="vatTu" maxlength="500" placeholder="VD: Mỡ EP2 0,5 kg" value="${val('vatTu')}">`)}
+      ${f('Người thực hiện', '执行人', `<input name="nguoi" required maxlength="100" autocomplete="name" value="${val('nguoi', store.get('tb_nguoi', ''))}">`, 1)}
+      ${f('Ghi chú / vấn đề phát hiện', '备注 / 发现的问题', `<textarea name="ghiChu" maxlength="2000" placeholder="VD: Ổ trục có tiếng kêu nhẹ">${val('ghiChu')}</textarea>`)}
+      ${ph.html}
+      ${f('Mã PIN', 'PIN码', '<input type="password" name="pin" required inputmode="numeric" autocomplete="off" maxlength="12">', 1)}
+      <p class="note">${bi('Đã xác nhận thì không sửa/xóa được trên app (lưu hồ sơ truy xuất BRCGS). Ngày làm gần nhất trong bảng chỉ được đẩy lên khi ngày mới muộn hơn ngày đang có.', '确认后无法在应用内修改/删除（BRCGS 追溯记录）。仅当新日期晚于原日期时才更新"最近保养日期"。')}</p>
+      <div id="err" role="alert"></div>
+      <button class="btn primary block" id="send">${bi('Xác nhận đã làm', '确认已完成')}</button>
+    </form>`;
+  const form = $('#bf'), err = $('#err'), btn = $('#send');
+  ph.bind();
+  $('#kq').onchange = e => [...$('#kq').children].forEach(l => l.classList.toggle('on', l.contains(e.target)));
+  form.oninput = () => { const { pin, ...d } = Object.fromEntries(new FormData(form)); store.set(draftKey, d); };
+
+  const setBtn = html => { btn.innerHTML = html; };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (btn.disabled) return;
+    err.innerHTML = '';
+    const bad = [...form.querySelectorAll('[required]')].find(el => !el.value.trim());
+    if (bad) { err.innerHTML = msgBad(bi('Vui lòng điền đủ các ô có dấu *', '请填写所有带 * 的项目')); bad.focus(); return; }
+    if (!navigator.onLine) { err.innerHTML = msgBad(bi('Không có mạng, chưa gửi được. Nội dung vẫn được giữ, thử lại khi có mạng.', '无网络，暂未提交。内容已保留，请联网后重试。')); return; }
+    const { pin, ...d } = Object.fromEntries(new FormData(form));
+    btn.disabled = true;
+    let step = 'photo';
+    try {
+      const anh = await ph.upload(pin, m.ma, setBtn);
+      step = 'save';
+      setBtn(bi('Đang ghi nhận…', '正在提交…'));
+      const res = await api.completeMaint(pin, { ...d, ma: m.ma, hangMuc: item.hangMuc, anh });
+      store.set('tb_nguoi', d.nguoi);
+      store.del(draftKey);
+      store.del('tb3_m_' + MA);
+      store.del('tb3_dash');
+      if (res.goiY === 'taoPhieu') {
+        const k = 'tb3_draft_' + MA;
+        const cu = store.get(k, {});
+        store.set(k, {
+          ...cu, ngay: d.ngay,
+          hienTuong: cu.hienTuong || d.ghiChu || d.noiDung || ('Phát hiện khi bảo trì: ' + item.hangMuc),
+          nguoiThucHien: cu.nguoiThucHien || d.nguoi,
+        });
+      }
+      view.innerHTML = `<div class="done">
+        <p>${bi('Đã ghi nhận bảo trì', '保养已记录')}</p>
+        <span class="plate">${esc(res.maLan)}</span>
+        <p class="note">${bi(`${esc(item.hangMuc)} · lần gần nhất ${fmtDate(res.ngayGanNhat)}` + (res.ngayDenHan ? ` · hạn kế tiếp ${fmtDate(res.ngayDenHan)}` : ''),
+          `${esc(item.hangMuc)} · 最近 ${fmtDate(res.ngayGanNhat)}` + (res.ngayDenHan ? ` · 下次 ${fmtDate(res.ngayDenHan)}` : ''))}</p>
+        ${res.goiY === 'taoPhieu' ? `<p>${msgBad(bi('Kết quả có vấn đề — nên lập phiếu sửa chữa để theo dõi.', '结果存在问题 — 建议开维修单跟踪。'))}</p>
+          <a class="btn primary" href="#/phieu/${encodeURIComponent(m.ma)}">+ ${bi('Tạo phiếu sửa chữa', '新建维修单')}</a>` : ''}
+        <a class="btn" href="#/may/${encodeURIComponent(m.ma)}">${bi('Xem lý lịch máy', '查看设备履历')}</a></div>`;
+    } catch (e2) {
+      err.innerHTML = msgBad(sendErr(e2, step));
+    } finally {
+      if (btn.isConnected) { btn.disabled = false; setBtn(bi('Xác nhận đã làm', '确认已完成')); }
+    }
+  };
 }
 
 /* ===================== Tổng quan ===================== */
@@ -686,6 +841,7 @@ const routes = [
   [/^#?\/?$/, pageHome, 'home'],
   [/^#\/may\/(.+)$/, pageMachine, 'home'],
   [/^#\/phieu\/(.+)$/, pageRepair, 'home'],
+  [/^#\/bao-tri\/([^/]+)\/(.+)$/, pageMaintDone, 'home'],
   [/^#\/tong-quan$/, pageDash, 'dash'],
   [/^#\/quet$/, pageScan, 'scan'],
   [/^#\/them$/, pageMore, 'more'],
@@ -702,7 +858,8 @@ async function route() {
     if (!m) continue;
     document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
     window.scrollTo(0, 0);
-    try { await fn(m[1] ? decodeURIComponent(m[1]) : undefined); } catch (e) { console.error(e); errorBox(e); }
+    try { await fn(m[1] ? decodeURIComponent(m[1]) : undefined, m[2] ? decodeURIComponent(m[2]) : undefined); }
+    catch (e) { console.error(e); errorBox(e); }
     view.focus({ preventScroll: true });
     return;
   }

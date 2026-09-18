@@ -222,3 +222,16 @@ h2.sec small{font-weight:400;color:var(--ink-2);font-size:.82rem;text-align:righ
 .hd-bar.warn i{background:var(--warn)}
 .hd-bar.bad i{background:var(--bad)}
 .hd-bar.off i{background:var(--ink-2)}
+
+/* ---- Phiên 5: xác nhận đã bảo trì ---- */
+.pm-act{flex:none;display:grid;justify-items:end;gap:6px}
+.btn.mini{min-height:36px;padding:4px 12px;font-size:.86rem;border-radius:8px}
+.bt-head{display:grid;gap:6px;padding:12px 14px;margin:0 0 14px;justify-items:start}
+.bt-head b{font-size:1.05rem}
+.bt-head .s{font-size:.85rem;color:var(--ink-2)}
+.picks2{display:grid;gap:10px}
+.pick{display:flex;align-items:center;gap:10px;min-height:56px;padding:10px 14px;border:1.5px solid var(--line);border-radius:12px;background:var(--surface);cursor:pointer;font-weight:600}
+.pick .ic{font-size:1.25rem;line-height:1}
+.pick input{width:22px;height:22px;flex:none;accent-color:var(--bronze)}
+.pick.on{border-color:var(--bronze);background:var(--bronze-soft)}
+.timeline .badge{display:inline-block}
