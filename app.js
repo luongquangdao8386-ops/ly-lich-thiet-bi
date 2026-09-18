@@ -43,7 +43,7 @@ function st(s) {
   return { vi: vi || '—', zh: zh || (hit ? hit[2] : ''), cls: hit ? hit[1] : 'none' };
 }
 const ICON_SCAN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 12h8"/></svg>';
-const LOGO = '<img src="icons/logo.svg" alt="">';
+const LOGO = '<svg viewBox="0 0 64 40" aria-hidden="true"><path d="M13 3 27 37H1Z"/><path d="M22 4h7l11 33h-7Z"/><path d="M36 4h27L47 37Z"/></svg>';
 
 /* ===================== Lớp dữ liệu (API Apps Script) =====================
    Định dạng theo Code.gs phiên 2: {ok:true,data} | {ok:false,error}
@@ -93,9 +93,10 @@ const api = {
   list: async () => (await get('list')).map(normM),
   async machine(ma) {
     const d = await get('machine', { ma });
-    return { machine: normM(d.machine), repairs: (d.repairs || []).map(normR), maintenance: (d.maintenance || []).map(normP) };
+    return { machine: normM(d.machine), repairs: (d.repairs || []).map(normR), maintenance: (d.maintenance || []).map(normP), contracts: d.contracts || [] };
   },
   dashboard: () => get('dashboard'),
+  contracts: () => get('contracts'),
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
   uploadPhoto: (pin, ma, base64) => post({ action: 'uploadPhoto', pin, ma, mimeType: 'image/jpeg', base64 })
 };
@@ -129,6 +130,46 @@ function due(x) {
   return { denHan, d, cls: 'ok', html: bi(`Hạn ${fmtDate(denHan)}`, `到期 ${fmtDate(denHan)}`) };
 }
 const byRecent = (a, b) => String(b.ngay).localeCompare(String(a.ngay)) || String(b.maPhieu).localeCompare(String(a.maPhieu));
+
+/* ===================== Hợp đồng bảo trì: nhãn hạn ===================== */
+/* muc do máy chủ tính: het = đã hết hạn, sap = trong ngưỡng báo trước,
+   ok = còn dài, xong = đã gia hạn/ngừng, thieu = chưa có ngày kết thúc */
+function hdHan(h) {
+  const d = h.conLai;
+  if (h.muc === 'xong') return { cls: 'off', html: bi(esc(hdTinhTrang(h).vi), esc(hdTinhTrang(h).zh)) };
+  if (h.muc === 'thieu') return { cls: 'warn', html: bi('Thiếu ngày kết thúc', '缺少结束日期') };
+  if (d < 0) return { cls: 'bad', html: bi(`Quá hạn ${-d} ngày`, `已过期 ${-d} 天`) };
+  if (d === 0) return { cls: 'bad', html: bi('Hết hạn hôm nay', '今天到期') };
+  if (h.muc === 'sap') return { cls: 'warn', html: bi(`Còn ${d} ngày`, `剩 ${d} 天`) };
+  return { cls: 'ok', html: bi(`Hết hạn ${fmtDate(h.ngayKetThuc)}`, `到期 ${fmtDate(h.ngayKetThuc)}`) };
+}
+/* Ô Sheets ghi "Đang hiệu lực / 有效" → tách hai dòng */
+function hdTinhTrang(h) {
+  const [vi, zh] = String(h.tinhTrang || '').split(/\s*\/\s*/);
+  return { vi: vi || '—', zh: zh || '' };
+}
+/* Thanh thời gian: đã trôi qua bao nhiêu phần của hợp đồng */
+function hdTienDo(h) {
+  if (!h.ngayBatDau || !h.ngayKetThuc) return null;
+  const tong = daysBetween(h.ngayBatDau, h.ngayKetThuc);
+  if (!(tong > 0)) return null;
+  const qua = daysBetween(h.ngayBatDau, today());
+  return Math.max(0, Math.min(100, Math.round(qua / tong * 100)));
+}
+/* Lấy số điện thoại đầu tiên trong ô "Anh Nam – 0900 000 000" */
+function hdTel(s) {
+  const m = String(s || '').match(/(\+?\d[\d\s.()-]{7,})/);
+  return m ? m[1].replace(/[^\d+]/g, '') : '';
+}
+const hdCard = h => {
+  const han = hdHan(h), td = hdTienDo(h);
+  return `<a class="hd-card" href="#/hop-dong/${encodeURIComponent(h.maHD)}">
+    <div class="hd-top"><b>${esc(h.ten) || esc(h.maHD)}</b><span class="badge ${han.cls}">${han.html}</span></div>
+    <div class="s">${esc(h.nhaThau) || '—'} · <span class="plate">${esc(h.maHD)}</span></div>
+    ${td == null ? '' : `<div class="hd-bar ${han.cls}"><i style="width:${td}%"></i></div>`}
+    <div class="s">${fmtDate(h.ngayBatDau) || '—'} → ${fmtDate(h.ngayKetThuc) || '—'}</div>
+  </a>`;
+};
 
 /* ===================== Hiển thị chung ===================== */
 function banner() {
@@ -204,6 +245,7 @@ async function pageMachine(ma) {
     return;
   }
   const { machine: m, repairs, maintenance } = r.data, s = st(m.trangThai);
+  const hds = r.data.contracts || [];
   const reps = [...repairs].sort(byRecent);
   const pms = maintenance.map(x => ({ ...x, due: due(x) })).sort((a, b) => a.due.d - b.due.d);
   const tongGio = reps.reduce((t, x) => t + (Number(x.gioDung) || 0), 0);
@@ -241,6 +283,10 @@ async function pageMachine(ma) {
         <span class="badge ${x.due.cls}">${x.due.html}</span></li>`).join('')}</ul>`
         : `<p class="empty card">${bi('Chưa có hạng mục bảo trì', '暂无保养项目')}</p>`}
     </section>
+    ${hds.length ? `<section class="block">
+      <h2 class="sec">${bi('Hợp đồng bảo trì', '维保合同')}<small>${bi('thuê ngoài', '外包')}</small></h2>
+      <div class="hd-list">${hds.map(hdCard).join('')}</div>
+    </section>` : ''}
     <section class="block">
       <h2 class="sec">${bi('Lịch sử sửa chữa', '维修记录')}
         <small>${bi(`${reps.length} lần, dừng ${num(tongGio)} giờ`, `${reps.length} 次，停机 ${num(tongGio)} 小时`)}</small></h2>
@@ -359,9 +405,16 @@ async function pageDash() {
   const maxH = Math.max(1, ...top.map(t => t.gio));
   const months = d.theoThang || [];
   const maxM = Math.max(1, ...months.map(x => x.soLan));
+  const hd = d.hopDong || { het: [], sap: [], tong: 0 };
+  const hdHet = (hd.het || []).length, hdSap = (hd.sap || []).length;
   view.innerHTML = `
     <h1 style="margin:0 0 12px">${bi('Tổng quan', '概览')}</h1>
     ${r.stale ? staleNote(r.stale) : ''}
+    ${hdHet + hdSap ? `<a class="alert ${hdHet ? 'bad' : 'warn'}" href="#/hop-dong?loc=${hdHet ? 'het' : 'sap'}">
+      <b>${hdHet + hdSap}</b>
+      <span>${bi(hdHet ? `hợp đồng đã hết hạn (${hdHet}), sắp hết hạn (${hdSap})` : `hợp đồng sắp hết hạn`,
+        hdHet ? `份合同已过期 (${hdHet})、即将到期 (${hdSap})` : '份合同即将到期')}</span>
+      <span class="go">›</span></a>` : ''}
     <div class="kpis">
       <div class="kpi"><b>${d.tongMay}</b>${bi('Tổng số máy', '设备总数')}</div>
       <div class="kpi ok"><b>${cnt('run')}</b>${bi('Đang chạy', '运行中')}</div>
@@ -476,6 +529,101 @@ async function pageScan() {
   } catch { if (h5 === inst) h5 = null; camErr(); }
 }
 
+/* ===================== Trang Thêm (更多) ===================== */
+const TILES = [
+  ['#/hop-dong', '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h5"/>', 'Hợp đồng bảo trì', '维保合同'],
+  ['#/tem', '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM14 14h2v2h-2zM18 18h2v2h-2z"/>', 'In tem QR', '打印二维码标签'],
+];
+function pageMore() {
+  view.innerHTML = `
+    <h1 style="margin:0 0 12px">${bi('Thêm', '更多')}</h1>
+    <div class="tiles">${TILES.map(([h, d, vi, zh]) => `<a class="tile" href="${h}">
+      <svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>${bi(vi, zh)}</a>`).join('')}</div>`;
+}
+
+/* ===================== Danh sách hợp đồng ===================== */
+const HD_LOC = [['', 'Tất cả', '全部'], ['sap', 'Sắp hết hạn', '即将到期'], ['het', 'Đã hết hạn', '已过期']];
+async function pageContracts(loc) {
+  loading();
+  let r;
+  try { r = await fetchCached('hd', api.contracts); } catch (e) { return errorBox(e); }
+  const all = r.data || [];
+  let f = HD_LOC.some(x => x[0] === loc) ? loc : '';
+  view.innerHTML = `
+    <h1 style="margin:0 0 12px">${bi('Hợp đồng bảo trì', '维保合同')}</h1>
+    ${r.stale ? staleNote(r.stale) : ''}
+    <label class="search"><input id="q" type="search" autocomplete="off" placeholder="Tìm tên, nhà thầu, mã HĐ / 搜索名称、承包商、编号" aria-label="Tìm hợp đồng"></label>
+    <div class="chips" id="chips">${HD_LOC.map(([v, vi, zh]) => `<button data-v="${v}" class="${v === f ? 'on' : ''}">${bi(vi, zh)}</button>`).join('')}</div>
+    <div id="hdl"></div>
+    <p class="note">${bi('Nhập và sửa hợp đồng trong Google Sheets, tab HopDong.', '请在 Google 表格 HopDong 页录入和维护合同。')}</p>`;
+  const q = $('#q'), box = $('#hdl');
+  const draw = () => {
+    const k = q.value.trim().toLowerCase();
+    const rows = all.filter(h => (!f || h.muc === f) &&
+      (!k || [h.ten, h.nhaThau, h.maHD, h.phamVi].join(' ').toLowerCase().includes(k)));
+    box.innerHTML = rows.length ? `<div class="hd-list">${rows.map(hdCard).join('')}</div>`
+      : `<p class="empty card">${all.length ? bi('Không có hợp đồng phù hợp', '没有匹配的合同')
+        : bi('Chưa có hợp đồng nào. Nhập vào tab HopDong trong Google Sheets.', '暂无合同，请在 Google 表格 HopDong 页录入。')}</p>`;
+  };
+  q.oninput = draw;
+  $('#chips').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    f = b.dataset.v;
+    [...$('#chips').children].forEach(x => x.classList.toggle('on', x === b));
+    draw();
+  };
+  draw();
+}
+
+/* ===================== Chi tiết hợp đồng ===================== */
+async function pageContract(maHD) {
+  loading();
+  let r;
+  try { r = await fetchCached('hd', api.contracts); } catch (e) { return errorBox(e); }
+  const h = (r.data || []).find(x => String(x.maHD).toUpperCase() === String(maHD).toUpperCase());
+  if (!h) {
+    view.innerHTML = `<div class="empty"><p class="plate">${esc(maHD)}</p><p>${bi('Không tìm thấy hợp đồng này', '未找到该合同')}</p>
+      <a class="btn" href="#/hop-dong">${bi('Về danh sách hợp đồng', '返回合同列表')}</a></div>`;
+    return;
+  }
+  const han = hdHan(h), td = hdTienDo(h), tt = hdTinhTrang(h), tel = hdTel(h.lienHe);
+  const row = (vi, zh, v) => v ? `<div class="wide"><dt>${bi(vi, zh)}</dt><dd>${esc(v)}</dd></div>` : '';
+  const may = (h.thietBi || []).filter(Boolean);
+  view.innerHTML = `
+    <a class="back" href="#/hop-dong">‹ ${bi('Hợp đồng bảo trì', '维保合同')}</a>
+    ${r.stale ? staleNote(r.stale) : ''}
+    <span class="plate xl">${esc(h.maHD)}</span>
+    <h1>${esc(h.ten)}</h1>
+    <p><span class="badge ${han.cls}">${han.html}</span></p>
+    ${td == null ? '' : `<div class="hd-bar ${han.cls}"><i style="width:${td}%"></i></div>`}
+    <section class="block">
+      <dl class="info">
+        ${row('Nhà thầu', '承包商', h.nhaThau)}
+        ${row('Người liên hệ', '联系人', h.lienHe)}
+        <div><dt>${bi('Ngày bắt đầu', '开始日期')}</dt><dd>${fmtDate(h.ngayBatDau) || '—'}</dd></div>
+        <div><dt>${bi('Ngày kết thúc', '结束日期')}</dt><dd>${fmtDate(h.ngayKetThuc) || '—'}</dd></div>
+        <div><dt>${bi('Tần suất bảo trì', '保养频率')}</dt><dd>${esc(h.tanSuat) || '—'}</dd></div>
+        <div><dt>${bi('Báo trước', '提前提醒')}</dt><dd>${esc(h.baoTruoc)} ${bi('ngày', '天')}</dd></div>
+        ${row('Phạm vi công việc', '工作范围', h.phamVi)}
+        ${row('Người phụ trách', '负责人', h.nguoiPhuTrach)}
+        <div class="wide"><dt>${bi('Tình trạng gia hạn', '续签状态')}</dt><dd>${bi(esc(tt.vi), esc(tt.zh))}</dd></div>
+        ${h.giaTri ? row('Giá trị hợp đồng (VNĐ)', '合同金额', num(h.giaTri)) : ''}
+        ${row('Ghi chú', '备注', h.ghiChu)}
+      </dl>
+      <div class="row2" style="margin-top:12px">
+        ${tel ? `<a class="btn" href="tel:${esc(tel)}">${bi('Gọi nhà thầu', '致电承包商')}</a>` : ''}
+        ${isUrl(h.taiLieu) ? `<a class="btn" href="${esc(h.taiLieu)}" target="_blank" rel="noopener">${bi('Mở hợp đồng', '打开合同')}</a>` : ''}
+      </div>
+    </section>
+    ${may.length ? `<section class="block">
+      <h2 class="sec">${bi('Thiết bị thuộc hợp đồng', '合同涵盖设备')}</h2>
+      <ul class="mlist">${may.map(x => `<li><a class="mrow" href="#/may/${encodeURIComponent(x)}">
+        <span class="plate">${esc(x)}</span><span><span class="t">${bi('Xem lý lịch máy', '查看设备履历')}</span></span><span>›</span></a></li>`).join('')}</ul>
+    </section>` : ''}
+    <p class="note">${bi('Khi gia hạn: thêm một dòng hợp đồng mới (mã mới) trong Google Sheets, rồi đổi dòng này thành "Đã gia hạn" để giữ lịch sử hồ sơ.', '续签时：在 Google 表格中新增一行新合同（新编号），并将本行改为"已续签"，以保留记录。')}</p>`;
+}
+
 /* ===================== In tem QR ===================== */
 const appUrlOk = () => /^https:\/\//.test(C.APP_URL || '') && !/ten-cong-ty/.test(C.APP_URL);
 async function pageLabels() {
@@ -540,7 +688,10 @@ const routes = [
   [/^#\/phieu\/(.+)$/, pageRepair, 'home'],
   [/^#\/tong-quan$/, pageDash, 'dash'],
   [/^#\/quet$/, pageScan, 'scan'],
-  [/^#\/tem$/, pageLabels, 'tem']
+  [/^#\/them$/, pageMore, 'more'],
+  [/^#\/hop-dong(?:\?loc=(\w+))?$/, pageContracts, 'more'],
+  [/^#\/hop-dong\/(.+)$/, pageContract, 'more'],
+  [/^#\/tem$/, pageLabels, 'more']
 ];
 async function route() {
   stopScan();

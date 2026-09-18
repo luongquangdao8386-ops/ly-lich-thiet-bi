@@ -37,7 +37,7 @@ main:focus{outline:none}
 .topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;
   background:var(--bar);color:#F2F4F5;padding:calc(10px + env(safe-area-inset-top)) 16px 10px}
 .brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:700}
-.logo{height:30px;width:auto;display:block;background:#fff;border-radius:6px;padding:3px}
+.logo{width:40px;height:25px;fill:#D08A3C}
 .app-name{text-align:right;font-size:.9rem;opacity:.85}
 .banner{background:var(--warn-bg);color:var(--warn);padding:8px 16px;font-size:.88rem;text-align:center}
 .banner.bad{background:var(--bad-bg);color:var(--bad)}
@@ -197,5 +197,28 @@ h2.sec small{font-weight:400;color:var(--ink-2);font-size:.82rem;text-align:righ
 .vbars.m12{grid-template-columns:repeat(12,1fr);gap:4px;padding-left:8px;padding-right:8px}
 .vbars.m12 .vbar{font-size:.7rem}
 
-/* ---- Phien 0: logo cong ty ---- */
-.tem .code img{width:calc(var(--s) * .16);height:auto;filter:grayscale(1) brightness(.6)}
+/* ---- Phiên 4: hợp đồng bảo trì ---- */
+.badge.off{background:var(--line);color:var(--ink-2)}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tile{display:grid;justify-items:center;gap:8px;padding:22px 10px;border:1px solid var(--line);border-radius:14px;background:var(--surface);text-decoration:none;color:inherit;text-align:center;font-weight:600}
+.tile svg{width:34px;height:34px;fill:none;stroke:var(--bronze);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tile:active{background:var(--line)}
+.alert{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;margin:0 0 14px;text-decoration:none;color:inherit;border:1px solid var(--line);background:var(--surface)}
+.alert b{font-size:1.5rem;line-height:1}
+.alert .go{margin-left:auto;font-size:1.4rem;color:var(--ink-2)}
+.alert.bad{border-color:var(--bad);background:var(--bad-bg)}
+.alert.warn{border-color:var(--warn);background:var(--warn-bg)}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}
+.chips button{flex:0 0 auto;min-height:40px;padding:6px 14px;border-radius:20px;border:1.5px solid var(--line);background:var(--surface);color:inherit;font:inherit;font-weight:600;cursor:pointer}
+.chips button.on{border-color:var(--bronze);background:var(--bronze);color:#fff}
+.hd-list{display:grid;gap:10px}
+.hd-card{display:grid;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);text-decoration:none;color:inherit}
+.hd-card:active{background:var(--line)}
+.hd-top{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}
+.hd-top b{font-size:1.05rem;line-height:1.25}
+.hd-card .s{font-size:.85rem;color:var(--ink-2)}
+.hd-bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:2px 0}
+.hd-bar i{display:block;height:100%;background:var(--bronze)}
+.hd-bar.warn i{background:var(--warn)}
+.hd-bar.bad i{background:var(--bad)}
+.hd-bar.off i{background:var(--ink-2)}
