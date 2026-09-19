@@ -89,6 +89,13 @@ const normM = m => ({ ...m, ma: String(m.ma), hang: m.hangSX, nam: m.namLapDat, 
 const normR = r => ({ ...r, nguoi: r.nguoiThucHien, gioDung: r.thoiGianDung, anh: (r.anh || []).map(imgUrl).filter(Boolean) });
 const normP = p => ({ ...p, lanCuoi: p.ngayGanNhat });
 const normB = b => ({ ...b, anh: (b.anh || []).map(imgUrl).filter(Boolean) });
+/* Một lần kiểm tra hằng ngày */
+const normK = k => (k ? { ...k, anh: (k.anh || []).map(imgUrl).filter(Boolean) } : null);
+function normCl(cl) {
+  if (!cl) return null;
+  return { ...cl, muc: cl.muc || [], lanGanNhat: normK(cl.lanGanNhat),
+    lichSu: (cl.lichSu || []).map(normK) };
+}
 
 const api = {
   list: async () => (await get('list')).map(normM),
@@ -98,13 +105,16 @@ const api = {
       machine: normM(d.machine), repairs: (d.repairs || []).map(normR),
       maintenance: (d.maintenance || []).map(normP),
       maintHistory: (d.maintHistory || []).map(normB),
-      contracts: d.contracts || []
+      contracts: d.contracts || [],
+      checklist: normCl(d.checklist)
     };
   },
   dashboard: () => get('dashboard'),
   contracts: () => get('contracts'),
+  checks: ngay => get('checks', { ngay }),
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
   completeMaint: (pin, data) => post({ action: 'completeMaint', pin, data }),
+  addCheck: (pin, data) => post({ action: 'addCheck', pin, data }),
   uploadPhoto: (pin, ma, base64) => post({ action: 'uploadPhoto', pin, ma, mimeType: 'image/jpeg', base64 })
 };
 
@@ -125,6 +135,47 @@ async function compressImage(file, max = 1280, q = 0.8) {
   c.width = Math.round(w * k); c.height = Math.round(h * k);
   c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', q).split(',')[1];
+}
+
+/* ============ Hàng đợi gửi khi mất mạng (phiên 6) ============
+   Mỗi phần tử: {ma, data, files:[{b64}|{url}], t}
+   PIN chỉ nhớ trong phiên (sessionStorage), không lưu lâu trên máy. */
+const QKEY = 'tb3_queue';
+const queueAll = () => store.get(QKEY, []) || [];
+const queueSet = a => store.set(QKEY, a);
+const queueAdd = it => { const a = queueAll(); a.push(it); queueSet(a); };
+const pinNho = () => { try { return sessionStorage.getItem('tb_pin') || ''; } catch { return ''; } };
+const nhoPin = p => { try { sessionStorage.setItem('tb_pin', p); } catch { /* bỏ qua */ } };
+
+let dangGui = false;
+async function flushQueue(pin) {
+  const p = pin || pinNho();
+  let q = queueAll();
+  if (!q.length) return { sent: 0, left: 0 };
+  if (!navigator.onLine) return { sent: 0, left: q.length, off: true };
+  if (!p) return { sent: 0, left: q.length, needPin: true };
+  if (dangGui) return { sent: 0, left: q.length, busy: true };
+  dangGui = true;
+  let sent = 0, err = null;
+  try {
+    while (q.length) {
+      const it = q[0];
+      try {
+        for (const f of it.files || []) {
+          if (f.url) continue;
+          f.url = (await api.uploadPhoto(p, it.ma, f.b64)).url;
+          delete f.b64;
+          queueSet(q);         // nhớ ảnh đã tải: gửi lại không tải trùng
+        }
+        const anh = (it.files || []).map(f => f.url).filter(Boolean);
+        await api.addCheck(p, { ...it.data, anh });
+        q.shift(); queueSet(q); sent++;
+        store.del('tb3_m_' + it.ma); store.del('tb3_dash');
+      } catch (e) { err = e; break; }
+    }
+  } finally { dangGui = false; }
+  banner();
+  return { sent, left: q.length, err, needPin: err && err.code === 'PIN' };
 }
 
 /* ===================== Bảo trì: tính hạn ===================== */
@@ -184,9 +235,18 @@ const hdCard = h => {
 /* ===================== Hiển thị chung ===================== */
 function banner() {
   const b = $('#banner');
+  const n = queueAll().length;
   if (!apiReady()) { b.className = 'banner bad'; b.innerHTML = bi('Chưa cấu hình: điền URL Apps Script vào API_URL trong config.js', '未配置：请在 config.js 的 API_URL 中填写 Apps Script 网址'); b.hidden = false; }
-  else if (!navigator.onLine) { b.className = 'banner bad'; b.innerHTML = bi('Không có mạng — đang xem dữ liệu đã lưu, chưa gửi được phiếu', '无网络 — 正在查看已缓存数据，暂无法提交维修单'); b.hidden = false; }
-  else b.hidden = true;
+  else if (!navigator.onLine) {
+    b.className = 'banner bad';
+    b.innerHTML = bi('Không có mạng — đang xem dữ liệu đã lưu, chưa gửi được phiếu' + (n ? ` (${n} lần kiểm tra chờ gửi)` : ''),
+      '无网络 — 正在查看已缓存数据，暂无法提交' + (n ? `（${n} 次点检待提交）` : ''));
+    b.hidden = false;
+  } else if (n) {
+    b.className = 'banner';
+    b.innerHTML = `<a href="#/kiem-tra">${bi(`${n} lần kiểm tra chờ gửi — bấm để gửi`, `${n} 次点检待提交 — 点击提交`)}</a>`;
+    b.hidden = false;
+  } else b.hidden = true;
 }
 function errText(e) {
   if (!navigator.onLine || e?.code === 'NET') return bi('Không có mạng hoặc không kết nối được máy chủ. Kiểm tra wifi/4G rồi thử lại.', '无网络或无法连接服务器，请检查 Wi-Fi/4G 后重试。');
@@ -257,6 +317,8 @@ async function pageMachine(ma) {
   const { machine: m, repairs, maintenance } = r.data, s = st(m.trangThai);
   const hds = r.data.contracts || [];
   const lsBt = r.data.maintHistory || [];
+  const cl = r.data.checklist;
+  const coKt = cl && (cl.muc || []).length > 0;
   const reps = [...repairs].sort(byRecent);
   const pms = maintenance.map(x => ({ ...x, due: due(x) })).sort((a, b) => a.due.d - b.due.d);
   const tongGio = reps.reduce((t, x) => t + (Number(x.gioDung) || 0), 0);
@@ -276,6 +338,8 @@ async function pageMachine(ma) {
         <p><span class="status ${s.cls}"><span class="dot ${s.cls}"></span>${bi(esc(s.vi), esc(s.zh))}</span></p>
       </div>
     </div>
+    ${coKt && !cl.daKiemTra ? `<a class="alert warn kt-cta" href="#/kiem-tra/${encodeURIComponent(m.ma)}">
+      <b>📋</b><span>${bi('Hôm nay chưa kiểm tra máy này — bấm để kiểm tra', '今天尚未点检本设备 — 点击开始')}</span><span class="go">›</span></a>` : ''}
     <section class="block">
       <h2 class="sec">${bi('Thông tin máy', '设备信息')}</h2>
       <dl class="info">
@@ -295,6 +359,18 @@ async function pageMachine(ma) {
           <a class="btn mini" href="#/bao-tri/${encodeURIComponent(m.ma)}/${encodeURIComponent(x.hangMuc)}">✓ ${bi('Đã làm', '已完成')}</a></span></li>`).join('')}</ul>`
         : `<p class="empty card">${bi('Chưa có hạng mục bảo trì', '暂无保养项目')}</p>`}
     </section>
+    ${coKt ? `<section class="block">
+      <h2 class="sec">${bi('Kiểm tra hằng ngày', '每日点检')}
+        <small>${bi(`${cl.muc.length} mục · mẫu ${esc(cl.maMau)}`, `${cl.muc.length} 项 · 表 ${esc(cl.maMau)}`)}</small></h2>
+      <div class="card kt-box">
+        <div class="kt-row">
+          <span class="badge ${cl.daKiemTra ? 'ok' : 'warn'}">${cl.daKiemTra ? bi('Đã kiểm tra hôm nay', '今天已点检') : bi('Hôm nay chưa kiểm tra', '今天未点检')}</span>
+          <a class="btn mini primary" href="#/kiem-tra/${encodeURIComponent(m.ma)}">📋 ${cl.daKiemTra ? bi('Kiểm tra lại', '再次点检') : bi('Kiểm tra ngay', '开始点检')}</a>
+        </div>
+        ${(cl.lichSu || []).length ? `<ul class="kt-hist">${cl.lichSu.slice(0, 5).map(k => ktDong(k)).join('')}</ul>`
+          : `<p class="empty">${bi('Chưa có lần kiểm tra nào', '暂无点检记录')}</p>`}
+      </div>
+    </section>` : ''}
     ${lsBt.length ? `<section class="block">
       <h2 class="sec">${bi('Lịch sử bảo trì', '保养记录')}
         <small>${bi(`${lsBt.length} lần gần đây`, `最近 ${lsBt.length} 次`)}</small></h2>
@@ -368,7 +444,13 @@ function photoField() {
     }
     return photos.map(p => p.url);
   };
-  return { html, bind, upload };
+  /* Ảnh cho hàng đợi offline: ảnh nào đã tải lên thì giữ URL, chưa thì nén ra base64 */
+  const raw = async () => {
+    const out = [];
+    for (const p of photos) out.push(p.url ? { url: p.url } : { b64: await compressImage(p.file) });
+    return out;
+  };
+  return { html, bind, upload, raw };
 }
 /* Thông báo lỗi khi gửi form (step = 'photo' | 'save') */
 function sendErr(e, step) {
@@ -545,6 +627,268 @@ async function pageMaintDone(ma, hangMuc) {
   };
 }
 
+/* ===================== Kiểm tra hằng ngày (phiên 6) ===================== */
+/* Ô Sheets ghi tiêu chuẩn 2 dòng: "tiếng Việt\n中文" */
+const hai = s => { const [a, b] = String(s || '').split('\n'); return { vi: (a || '').trim(), zh: (b || '').trim() }; };
+/* Một dòng trong lịch sử kiểm tra */
+function ktDong(k) {
+  const xau = k.soKhongDat > 0;
+  return `<li>
+    <div class="kt-h"><b>${esc(fmtDate(k.ngay))}</b><span class="s">${esc(k.maLan)}</span>
+      <span class="badge ${xau ? 'bad' : 'ok'}">${xau ? bi(`Không đạt ${k.soKhongDat} mục`, `${k.soKhongDat} 项不合格`) : bi('Đạt', '合格')}</span></div>
+    <div class="s">${bi('Người kiểm tra: ' + esc(k.nguoi || '—'), '点检人：' + esc(k.nguoi || '—'))}</div>
+    ${k.chiTietKhongDat ? `<div class="kt-bad">${esc(k.chiTietKhongDat).replace(/\n/g, '<br>')}</div>` : ''}
+    ${(k.anh || []).length ? `<div class="thumbs">${k.anh.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Ảnh kiểm tra ${esc(k.maLan)}" loading="lazy" referrerpolicy="no-referrer"></a>`).join('')}</div>` : ''}
+  </li>`;
+}
+
+async function pageCheck(ma) {
+  loading();
+  const MA = String(ma).toUpperCase();
+  let r;
+  try { r = await fetchCached('m_' + MA, () => api.machine(ma)); }
+  catch (e) {
+    if (e.code !== 'NOT_FOUND') return errorBox(e);
+    view.innerHTML = `<div class="empty"><p class="plate">${esc(MA)}</p><p>${bi('Không tìm thấy máy có mã này', '未找到该编号的设备')}</p><a class="btn" href="#/">${bi('Về danh sách', '返回列表')}</a></div>`;
+    return;
+  }
+  const m = r.data.machine, cl = r.data.checklist;
+  if (!cl || !(cl.muc || []).length) {
+    view.innerHTML = `<div class="empty"><p class="plate">${esc(MA)}</p>
+      <p>${bi('Máy này chưa có mẫu kiểm tra. Điền cột "Mẫu kiểm tra" của máy ở tab ThietBi và nhập các mục ở tab MauKiemTra trong Google Sheets.', '本设备未设置点检表。请在 Google 表格 ThietBi 页填写"点检表"列，并在 MauKiemTra 页录入项目。')}</p>
+      <a class="btn" href="#/may/${encodeURIComponent(ma)}">${bi('Về trang máy', '返回设备')}</a></div>`;
+    return;
+  }
+  const draftKey = 'tb3_kt_' + MA;
+  const draft = store.get(draftKey, {});
+  const state = {
+    idGui: draft.idGui || (MA + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6)),
+    kq: draft.kq || {}, gc: draft.gc || {}
+  };
+  const luu = () => store.set(draftKey, { idGui: state.idGui, kq: state.kq, gc: state.gc });
+  const ph = photoField();
+  const f = (vi, zh, input, req) => `<label class="field"><span>${bi(vi + (req ? ' <b class="req">*</b>' : ''), zh)}</span>${input}</label>`;
+  const caTen = hai(String(cl.ca || '').replace(/\s*\/\s*/, '\n'));
+
+  view.innerHTML = `
+    <a class="back" href="#/may/${encodeURIComponent(ma)}">‹ ${bi('Quay lại máy', '返回设备')}</a>
+    <h1 style="margin:0 0 4px">${bi('Kiểm tra hằng ngày', '每日点检')}</h1>
+    <p><span class="plate">${esc(m.ma)}</span> ${esc(m.ten)}</p>
+    <div class="card bt-head">
+      <b>${fmtDate(cl.ngay)} · ${bi(esc(caTen.vi), esc(caTen.zh))}</b>
+      <span class="s">${bi(`${cl.muc.length} mục · mẫu ${esc(cl.maMau)}`, `${cl.muc.length} 项 · 表 ${esc(cl.maMau)}`)}</span>
+      ${cl.daKiemTra ? `<span class="badge ok">${bi('Hôm nay đã kiểm tra một lần', '今天已点检过一次')}</span>` : ''}
+    </div>
+    <button type="button" class="btn block" id="allOk">✓ ${bi('Đánh dấu tất cả đạt', '全部标记合格')}</button>
+    <form class="form" id="kf" novalidate>
+      <div class="kt-list" id="kl">${cl.muc.map(x => {
+        const tc = hai(x.tieuChuan);
+        const khong = state.kq[x.stt] === 'khong';
+        return `<div class="kt-item${khong ? ' no' : ''}" data-stt="${x.stt}">
+          <div class="kt-q"><b>${x.stt}. ${esc(x.hangMuc)}</b>
+            ${x.hangMucZh ? `<span class="zh" lang="zh">${esc(x.hangMucZh)}</span>` : ''}
+            ${tc.vi ? `<span class="s">${esc(tc.vi)}${tc.zh ? `<br><span lang="zh">${esc(tc.zh)}</span>` : ''}</span>` : ''}</div>
+          <div class="kt-btns">
+            <button type="button" class="kt-b dat${khong ? '' : ' on'}" data-kq="dat">✓ ${bi('Đạt', '合格')}</button>
+            <button type="button" class="kt-b khong${khong ? ' on' : ''}" data-kq="khong">✕ ${bi('Không đạt', '不合格')}</button>
+          </div>
+          <div class="kt-gc"${khong ? '' : ' hidden'}>
+            <textarea data-gc="${x.stt}" maxlength="500" placeholder="Bắt buộc: mô tả lỗi / 必填：说明问题">${esc(state.gc[x.stt] || '')}</textarea>
+          </div>
+        </div>`;
+      }).join('')}</div>
+      ${f('Người kiểm tra', '点检人', `<input name="nguoi" required maxlength="100" autocomplete="name" value="${esc(draft.nguoi || store.get('tb_nguoi', ''))}">`, 1)}
+      ${ph.html}
+      ${f('Mã PIN', 'PIN码', `<input type="password" name="pin" required inputmode="numeric" autocomplete="off" maxlength="12" value="${esc(pinNho())}">`, 1)}
+      <p class="note">${bi('Mục không đạt bắt buộc ghi chú, ảnh tùy chọn. Đã gửi thì không sửa/xóa được trên app (hồ sơ BRCGS) — sửa sai trong Google Sheets. Mất mạng vẫn kiểm tra được: máy sẽ giữ lại và tự gửi khi có mạng.', '不合格项必须填写说明，照片可选。提交后无法在应用内修改/删除（BRCGS 记录）——请在 Google 表格更正。无网络也可点检：应用会保存并在联网后自动提交。')}</p>
+      <div id="err" role="alert"></div>
+      <button class="btn primary block" id="send">${bi('Gửi kết quả kiểm tra', '提交点检结果')}</button>
+    </form>`;
+
+  const form = $('#kf'), err = $('#err'), btn = $('#send'), kl = $('#kl');
+  ph.bind();
+  const setItem = (el, kq) => {
+    el.classList.toggle('no', kq === 'khong');
+    el.querySelectorAll('.kt-b').forEach(b => b.classList.toggle('on', b.dataset.kq === kq));
+    el.querySelector('.kt-gc').hidden = kq !== 'khong';
+  };
+  kl.onclick = e => {
+    const b = e.target.closest('.kt-b');
+    if (!b) return;
+    const el = b.closest('.kt-item'), stt = el.dataset.stt;
+    state.kq[stt] = b.dataset.kq;
+    setItem(el, b.dataset.kq);
+    if (b.dataset.kq === 'khong') el.querySelector('textarea').focus();
+    luu();
+  };
+  kl.oninput = e => {
+    const t = e.target.closest('[data-gc]');
+    if (!t) return;
+    state.gc[t.dataset.gc] = t.value;
+    luu();
+  };
+  $('#allOk').onclick = () => {
+    kl.querySelectorAll('.kt-item').forEach(el => { state.kq[el.dataset.stt] = 'dat'; setItem(el, 'dat'); });
+    luu();
+  };
+
+  const setBtn = html => { btn.innerHTML = html; };
+  const xong = (res, cho) => {
+    const so = res.soKhongDat || 0;
+    store.del(draftKey);
+    store.del('tb3_m_' + MA); store.del('tb3_dash'); store.del('tb3_kt_ngay_' + cl.ngay);
+    view.innerHTML = `<div class="done">
+      <p>${cho ? bi('Đã lưu trên máy — sẽ tự gửi khi có mạng', '已保存在手机 — 联网后自动提交')
+        : bi(res.trung ? 'Lần kiểm tra này đã được ghi trước đó' : 'Đã ghi nhận kiểm tra', res.trung ? '本次点检此前已记录' : '点检已记录')}</p>
+      ${res.maLan ? `<span class="plate">${esc(res.maLan)}</span>` : ''}
+      <p class="note">${bi(`${esc(m.ma)} · ${fmtDate(cl.ngay)} · ` + (so ? `${so} mục không đạt` : 'tất cả đạt'),
+        `${esc(m.ma)} · ${fmtDate(cl.ngay)} · ` + (so ? `${so} 项不合格` : '全部合格'))}</p>
+      ${so ? `<a class="btn primary" href="#/phieu/${encodeURIComponent(m.ma)}">+ ${bi('Tạo phiếu sửa chữa', '新建维修单')}</a>` : ''}
+      <a class="btn primary" href="#/quet">${bi('Quét máy tiếp theo', '扫描下一台')}</a>
+      <a class="btn" href="#/kiem-tra">${bi('Xem tiến độ kiểm tra', '查看点检进度')}</a>
+      <a class="btn" href="#/may/${encodeURIComponent(m.ma)}">${bi('Về trang máy', '返回设备')}</a></div>`;
+    banner();
+  };
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (btn.disabled) return;
+    err.innerHTML = '';
+    const items = cl.muc.map(x => ({ stt: x.stt, kq: state.kq[x.stt] === 'khong' ? 'khong' : 'dat', gc: String(state.gc[x.stt] || '').trim() }));
+    const thieu = items.find(i => i.kq === 'khong' && !i.gc);
+    if (thieu) {
+      err.innerHTML = msgBad(bi(`Mục ${thieu.stt} không đạt — bắt buộc ghi chú`, `第 ${thieu.stt} 项不合格 — 必须填写说明`));
+      const t = kl.querySelector(`[data-gc="${thieu.stt}"]`);
+      if (t) { t.focus(); t.scrollIntoView({ block: 'center' }); }
+      return;
+    }
+    const { pin, ...d } = Object.fromEntries(new FormData(form));
+    if (!String(d.nguoi || '').trim() || !String(pin || '').trim()) {
+      err.innerHTML = msgBad(bi('Vui lòng điền đủ các ô có dấu *', '请填写所有带 * 的项目'));
+      return;
+    }
+    store.set('tb_nguoi', d.nguoi);
+    store.set(draftKey, { idGui: state.idGui, kq: state.kq, gc: state.gc, nguoi: d.nguoi });
+    nhoPin(pin);
+    const data = { idGui: state.idGui, ma: m.ma, nguoi: d.nguoi, ngay: cl.ngay, ca: cl.ca, ketQua: items, anh: [] };
+    const soKhongDat = items.filter(i => i.kq === 'khong').length;
+    const vaoHangDoi = async () => {
+      setBtn(bi('Đang lưu…', '正在保存…'));
+      const files = await ph.raw();
+      queueAdd({ ma: m.ma, data, files, t: Date.now() });
+      xong({ soKhongDat }, true);
+    };
+    btn.disabled = true;
+    let step = 'photo';
+    try {
+      if (!navigator.onLine) return await vaoHangDoi();
+      const anh = await ph.upload(pin, m.ma, setBtn);
+      step = 'save';
+      setBtn(bi('Đang gửi…', '正在提交…'));
+      const res = await api.addCheck(pin, { ...data, anh });
+      xong({ ...res, soKhongDat }, false);
+    } catch (e2) {
+      if (e2.code === 'NET') { try { return await vaoHangDoi(); } catch { /* rơi xuống báo lỗi */ } }
+      err.innerHTML = msgBad(sendErr(e2, step));
+    } finally {
+      if (btn.isConnected) { btn.disabled = false; setBtn(bi('Gửi kết quả kiểm tra', '提交点检结果')); }
+    }
+  };
+}
+
+/* ===================== Trang Kiểm tra (tiến độ trong ngày) ===================== */
+async function pageChecks() {
+  let ngay = today();
+  view.innerHTML = `
+    <h1 style="margin:0 0 12px">${bi('Kiểm tra hằng ngày', '每日点检')}</h1>
+    <div id="qbox"></div>
+    <label class="field" style="max-width:220px"><span>${bi('Ngày', '日期')}</span>
+      <input type="date" id="ngay" value="${ngay}" max="${today()}"></label>
+    <div id="ktv"><p class="empty">${bi('Đang tải…', '加载中…')}</p></div>`;
+
+  const qbox = $('#qbox');
+  const veQueue = () => {
+    const n = queueAll().length;
+    qbox.innerHTML = n ? `<div class="alert warn"><b>${n}</b>
+      <span>${bi('lần kiểm tra chờ gửi', '次点检待提交')}</span>
+      <button class="btn mini primary" id="guiQ" style="margin-left:auto">${bi('Gửi ngay', '立即提交')}</button></div>
+      <div id="qmsg"></div>` : '';
+    const b = $('#guiQ');
+    if (!b) return;
+    b.onclick = async () => {
+      const msg = $('#qmsg');
+      let pin = pinNho();
+      if (!pin) pin = String(prompt('Nhập mã PIN để gửi / 请输入PIN码') || '').trim();
+      if (!pin) return;
+      b.disabled = true; b.textContent = '…';
+      const res = await flushQueue(pin);
+      if (res.sent) nhoPin(pin);
+      msg.innerHTML = res.left
+        ? msgBad(res.needPin ? bi('Sai mã PIN — thử lại', 'PIN码错误 — 请重试')
+          : bi('Còn ' + res.left + ' lần chưa gửi được: ' + esc(res.err?.message || ''), '还有 ' + res.left + ' 次未提交'))
+        : `<p class="note">${bi('Đã gửi xong ' + res.sent + ' lần kiểm tra', '已提交 ' + res.sent + ' 次点检')}</p>`;
+      veQueue();
+      if (res.sent) tai();
+    };
+  };
+
+  const tai = async () => {
+    const box = $('#ktv');
+    if (!box) return;
+    box.innerHTML = `<p class="empty">${bi('Đang tải…', '加载中…')}</p>`;
+    let r;
+    try { r = await fetchCached('kt_ngay_' + ngay, () => api.checks(ngay)); }
+    catch (e) { box.innerHTML = `<p class="empty">${errText(e)}</p>`; return; }
+    const d = r.data, may = d.may || [], caList = d.ca || [];
+    const rec = m => caList.map(c => m.ca[c]).find(Boolean) || null;
+    const daLam = may.filter(m => rec(m));
+    const chuaLam = may.filter(m => !rec(m));
+    const khongDat = daLam.filter(m => rec(m).kq === 'khong');
+    const pct = may.length ? Math.round(daLam.length / may.length * 100) : 0;
+    const groups = {};
+    chuaLam.forEach(m => (groups[m.khuVuc || '—'] ||= []).push(m));
+    box.innerHTML = `
+      ${r.stale ? staleNote(r.stale) : ''}
+      <div class="card kt-prog">
+        <div class="kt-row"><b>${daLam.length}/${may.length}</b>
+          <span class="s">${bi('máy đã kiểm tra ngày ' + fmtDate(d.ngay), fmtDate(d.ngay) + ' 已点检设备')}</span></div>
+        <div class="hd-bar ${pct === 100 ? 'ok' : 'warn'}"><i style="width:${pct}%"></i></div>
+      </div>
+      ${khongDat.length ? `<section class="block">
+        <h2 class="sec">${bi('Máy không đạt', '不合格设备')}<small>${khongDat.length}</small></h2>
+        <ul class="mlist">${khongDat.map(m => { const k = rec(m); return `<li><a class="mrow" href="#/may/${encodeURIComponent(m.ma)}">
+          <span class="plate">${esc(m.ma)}</span>
+          <span><span class="t">${esc(m.ten)}</span><br><span class="s">${esc(k.nguoi || '')} · ${esc(k.maLan)}</span></span>
+          <span class="badge bad">${bi(k.soKhongDat + ' mục', k.soKhongDat + ' 项')}</span></a></li>`; }).join('')}</ul>
+      </section>` : ''}
+      <section class="block">
+        <h2 class="sec">${bi('Chưa kiểm tra', '未点检')}<small>${chuaLam.length}</small></h2>
+        ${chuaLam.length ? Object.entries(groups).map(([kv, ms]) => `
+          <h3 class="area-h">${esc(kv)} <small>${ms.length}</small></h3>
+          <ul class="mlist">${ms.map(m => `<li><a class="mrow" href="#/kiem-tra/${encodeURIComponent(m.ma)}">
+            <span class="plate">${esc(m.ma)}</span><span><span class="t">${esc(m.ten)}</span></span>
+            <span class="btn mini primary">📋 ${bi('Kiểm tra', '点检')}</span></a></li>`).join('')}</ul>`).join('')
+          : `<p class="empty card">${may.length ? bi('Tất cả máy đã được kiểm tra ✓', '所有设备已完成点检 ✓')
+            : bi('Chưa có máy nào cần kiểm tra. Điền cột "Mẫu kiểm tra" ở tab ThietBi trong Google Sheets.', '暂无需点检设备，请在 Google 表格 ThietBi 页填写"点检表"列。')}</p>`}
+      </section>
+      ${daLam.length ? `<section class="block">
+        <h2 class="sec">${bi('Đã kiểm tra', '已点检')}<small>${daLam.length}</small></h2>
+        <ul class="mlist">${daLam.map(m => { const k = rec(m); return `<li><a class="mrow" href="#/may/${encodeURIComponent(m.ma)}">
+          <span class="plate">${esc(m.ma)}</span>
+          <span><span class="t">${esc(m.ten)}</span><br><span class="s">${esc(k.nguoi || '')}</span></span>
+          <span class="badge ${k.kq === 'khong' ? 'bad' : 'ok'}">${k.kq === 'khong' ? bi('Không đạt', '不合格') : bi('Đạt', '合格')}</span></a></li>`; }).join('')}</ul>
+      </section>` : ''}
+      <p class="note">${bi('Máy cần kiểm tra là máy có điền cột "Mẫu kiểm tra" ở tab ThietBi. Nội dung từng mục sửa ở tab MauKiemTra.', '需点检的设备＝ThietBi 页填写了"点检表"列的设备。项目内容在 MauKiemTra 页维护。')}</p>`;
+  };
+
+  $('#ngay').onchange = e => { ngay = e.target.value || today(); tai(); };
+  veQueue();
+  tai();
+  if (queueAll().length && navigator.onLine && pinNho()) {
+    flushQueue().then(res => { if (res.sent) { veQueue(); tai(); } });
+  }
+}
+
 /* ===================== Tổng quan ===================== */
 async function pageDash() {
   loading();
@@ -562,9 +906,17 @@ async function pageDash() {
   const maxM = Math.max(1, ...months.map(x => x.soLan));
   const hd = d.hopDong || { het: [], sap: [], tong: 0 };
   const hdHet = (hd.het || []).length, hdSap = (hd.sap || []).length;
+  const kt = d.kiemTra || null;
+  const ktChua = kt ? (kt.chuaLam || []).length : 0;
+  const ktXau = kt ? (kt.khongDat || []).length : 0;
   view.innerHTML = `
     <h1 style="margin:0 0 12px">${bi('Tổng quan', '概览')}</h1>
     ${r.stale ? staleNote(r.stale) : ''}
+    ${ktXau ? `<a class="alert bad" href="#/kiem-tra"><b>${ktXau}</b>
+      <span>${bi('máy kiểm tra không đạt hôm nay', '台设备今天点检不合格')}</span><span class="go">›</span></a>` : ''}
+    ${kt && kt.tongCan ? `<a class="alert ${ktChua ? 'warn' : ''}" href="#/kiem-tra"><b>${kt.daLam}/${kt.tongCan}</b>
+      <span>${ktChua ? bi(`máy đã kiểm tra hôm nay — còn ${ktChua} máy chưa làm`, `台设备今天已点检 — 还有 ${ktChua} 台未做`)
+        : bi('máy đã kiểm tra hôm nay ✓', '台设备今天已点检 ✓')}</span><span class="go">›</span></a>` : ''}
     ${hdHet + hdSap ? `<a class="alert ${hdHet ? 'bad' : 'warn'}" href="#/hop-dong?loc=${hdHet ? 'het' : 'sap'}">
       <b>${hdHet + hdSap}</b>
       <span>${bi(hdHet ? `hợp đồng đã hết hạn (${hdHet}), sắp hết hạn (${hdSap})` : `hợp đồng sắp hết hạn`,
@@ -842,6 +1194,8 @@ const routes = [
   [/^#\/may\/(.+)$/, pageMachine, 'home'],
   [/^#\/phieu\/(.+)$/, pageRepair, 'home'],
   [/^#\/bao-tri\/([^/]+)\/(.+)$/, pageMaintDone, 'home'],
+  [/^#\/kiem-tra$/, pageChecks, 'check'],
+  [/^#\/kiem-tra\/(.+)$/, pageCheck, 'check'],
   [/^#\/tong-quan$/, pageDash, 'dash'],
   [/^#\/quet$/, pageScan, 'scan'],
   [/^#\/them$/, pageMore, 'more'],
@@ -866,17 +1220,25 @@ async function route() {
   go('#/');
 }
 
+/* Có mạng + đã nhớ PIN trong phiên → tự gửi các lần kiểm tra đang chờ */
+function tuGui() {
+  if (queueAll().length && navigator.onLine && pinNho()) {
+    flushQueue().then(res => { if (res.sent && location.hash === '#/kiem-tra') route(); });
+  }
+}
+
 (function start() {
   $('#co-vi').textContent = C.COMPANY_VI;
   $('#co-zh').textContent = C.COMPANY_ZH;
   const ma = new URLSearchParams(location.search).get('ma');
   if (ma) history.replaceState(null, '', location.pathname + '#/may/' + encodeURIComponent(ma.trim().toUpperCase()));
   addEventListener('hashchange', route);
-  addEventListener('online', banner);
+  addEventListener('online', () => { banner(); tuGui(); });
   addEventListener('offline', banner);
   addEventListener('pagehide', stopScan);
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScan(); else if (location.hash === '#/quet') route(); });
   route();
+  tuGui();
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('service-worker.js').catch(() => { /* bỏ qua */ });
   }
