@@ -63,7 +63,7 @@ async function call(url, opt = {}) {
   try { j = await res.json(); } catch { throw new ApiError('Máy chủ trả dữ liệu lạ — kiểm tra triển khai Apps Script (Quyền truy cập: Bất kỳ ai)', 'FORMAT'); }
   if (!j.ok) {
     const e = String(j.error || 'Lỗi không rõ');
-    throw new ApiError(e, /^Không tìm thấy thiết bị/.test(e) ? 'NOT_FOUND' : /PIN/.test(e) ? 'PIN' : 'SERVER');
+    throw new ApiError(e, /^Không tìm thấy (thiết bị|điểm đo)/.test(e) ? 'NOT_FOUND' : /PIN/.test(e) ? 'PIN' : 'SERVER');
   }
   return j.data;
 }
@@ -100,6 +100,10 @@ function normCl(cl) {
 /* Kiểm định (phiên 7): thêm ngayKetThuc để dùng chung nhãn hạn với hợp đồng */
 const normKD = k => ({ ...k, ngayKetThuc: k.ngayHetHan });
 
+/* Chỉ số – điểm đo (phiên 8A) */
+const normCS = r => (r ? { ...r, anh: (r.anh || []).map(imgUrl).filter(Boolean) } : null);
+const normDD = d => ({ ...d, lanCuoi: normCS(d.lanCuoi) });
+
 const api = {
   list: async () => (await get('list')).map(normM),
   async machine(ma) {
@@ -110,6 +114,7 @@ const api = {
       maintHistory: (d.maintHistory || []).map(normB),
       contracts: d.contracts || [],
       inspections: (d.inspections || []).map(normKD),
+      meters: (d.meters || []).map(normDD),
       checklist: normCl(d.checklist)
     };
   },
@@ -117,9 +122,19 @@ const api = {
   contracts: () => get('contracts'),
   inspections: async () => (await get('inspections')).map(normKD),
   checks: ngay => get('checks', { ngay }),
+  meters: async () => (await get('meters')).map(normDD),
+  async meter(maDiem) {
+    const d = await get('meter', { maDiem });
+    return { ...d, lanCuoi: normCS(d.lanCuoi), lichSu: (d.lichSu || []).map(normCS) };
+  },
+  async energy() {
+    const d = await get('energy');
+    return { ...d, diem: (d.diem || []).map(normDD) };
+  },
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
   completeMaint: (pin, data) => post({ action: 'completeMaint', pin, data }),
   addCheck: (pin, data) => post({ action: 'addCheck', pin, data }),
+  addReading: (pin, data) => post({ action: 'addReading', pin, data }),
   uploadPhoto: (pin, ma, base64) => post({ action: 'uploadPhoto', pin, ma, mimeType: 'image/jpeg', base64 })
 };
 
@@ -142,11 +157,13 @@ async function compressImage(file, max = 1280, q = 0.8) {
   return c.toDataURL('image/jpeg', q).split(',')[1];
 }
 
-/* ============ Hàng đợi gửi khi mất mạng (phiên 6) ============
-   Mỗi phần tử: {ma, data, files:[{b64}|{url}], t}
+/* ============ Hàng đợi gửi khi mất mạng (phiên 6, mở rộng phiên 8A) ============
+   Mỗi phần tử: {loai:'check'|'chiso', ma, data, files:[{b64}|{url}], t}
+   (phần tử cũ không có 'loai' được hiểu là 'check')
    PIN chỉ nhớ trong phiên (sessionStorage), không lưu lâu trên máy. */
 const QKEY = 'tb3_queue';
 const queueAll = () => store.get(QKEY, []) || [];
+const queueOf = loai => queueAll().filter(x => (x.loai || 'check') === loai);
 const queueSet = a => store.set(QKEY, a);
 const queueAdd = it => { const a = queueAll(); a.push(it); queueSet(a); };
 const pinNho = () => { try { return sessionStorage.getItem('tb_pin') || ''; } catch { return ''; } };
@@ -173,9 +190,15 @@ async function flushQueue(pin) {
           queueSet(q);         // nhớ ảnh đã tải: gửi lại không tải trùng
         }
         const anh = (it.files || []).map(f => f.url).filter(Boolean);
-        await api.addCheck(p, { ...it.data, anh });
+        if ((it.loai || 'check') === 'chiso') {
+          await api.addReading(p, { ...it.data, anh });
+          store.del('tb3_dd_' + it.ma); store.del('tb3_nl');
+        } else {
+          await api.addCheck(p, { ...it.data, anh });
+          store.del('tb3_m_' + it.ma);
+        }
         q.shift(); queueSet(q); sent++;
-        store.del('tb3_m_' + it.ma); store.del('tb3_dash');
+        store.del('tb3_dash');
       } catch (e) { err = e; break; }
     }
   } finally { dangGui = false; }
@@ -196,6 +219,86 @@ const byRecent = (a, b) => String(b.ngay).localeCompare(String(a.ngay)) || Strin
 /* Ô Sheets ghi "Hoàn thành / 已完成" → tách hai dòng */
 const viZh = s => { const [vi, zh] = String(s || '').split(/\s*\/\s*/); return { vi: vi || '—', zh: zh || '' }; };
 const sameText = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+/* ============ Biểu đồ cột SVG thuần (phiên 8A, không thêm thư viện) ============
+   rows: [{label, v}] */
+function svgBars(rows, opt = {}) {
+  const n = rows.length;
+  if (!n) return `<p class="empty">${bi('Chưa có dữ liệu', '暂无数据')}</p>`;
+  const W = 340, H = 134, top = 8, bot = 20;
+  const max = Math.max(0, ...rows.map(r => Number(r.v) || 0));
+  const bw = W / n, pad = Math.min(4, bw * 0.16);
+  const cao = v => (max > 0 && v > 0 ? Math.max(2, (v / max) * (H - top - bot)) : 0);
+  const buoc = Math.max(1, Math.ceil(n / 7));
+  const don = opt.unit ? ' ' + opt.unit : '';
+  const bars = rows.map((r, i) => {
+    const v = Number(r.v) || 0, h = cao(v), y = H - bot - h;
+    const x = i * bw + pad, w = Math.max(1, bw - pad * 2);
+    const nhan = (i % buoc === 0 || i === n - 1)
+      ? `<text x="${(i * bw + bw / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle" font-size="9" fill="currentColor" opacity=".6">${esc(r.label)}</text>` : '';
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--bronze)" opacity="${v > 0 ? '.95' : '.2'}"><title>${esc(r.label)}: ${num(v)}${esc(don)}</title></rect>${nhan}`;
+  }).join('');
+  return `<div class="chart">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opt.alt || 'Biểu đồ cột')}">
+      <line x1="0" y1="${H - bot}" x2="${W}" y2="${H - bot}" stroke="currentColor" opacity=".2"/>${bars}</svg>
+    <p class="note" style="margin:2px 0 0">${bi('Cao nhất ' + num(max) + don, '最高 ' + num(max) + don)}</p></div>`;
+}
+/* Nhãn "đã ghi / chưa ghi hôm nay" của một điểm đo */
+function csNhan(d) {
+  if (d.daGhiHomNay) return { cls: 'ok', html: bi('Đã ghi', '已抄') };
+  return { cls: 'warn', html: bi('Chưa ghi', '未抄') };
+}
+/* Một điểm đo trong danh sách (trang Năng lượng, trang máy) */
+function ddCard(x, maxThang) {
+  const n = csNhan(x);
+  const bar = maxThang ? `<i class="dd-bar"><em style="width:${((x.thangNay || 0) / maxThang * 100).toFixed(1)}%"></em></i>` : '';
+  const thang = x.thangNay != null
+    ? `<p class="dd-val"><b>${num(x.thangNay)} ${esc(x.donVi)}</b> <span class="s">${bi('tháng này', '本月')}</span></p>${bar}` : '';
+  return `<li><a class="dd-card" href="#/diem/${encodeURIComponent(x.maDiem)}">
+    <div class="dd-top"><span class="plate">${esc(x.maDiem)}</span>
+      ${x.laSEU ? `<span class="badge warn seu">SEU</span>` : ''}
+      <span class="badge ${n.cls} dd-badge">${n.html}</span></div>
+    <b class="dd-name">${esc(x.ten)}</b>
+    ${thang}
+    <span class="s">${csLanCuoi(x)}</span></a></li>`;
+}
+/* Dòng mô tả lần ghi gần nhất của một điểm đo */
+const csLanCuoi = d => (d.lanCuoi
+  ? bi(`Lần cuối ${fmtDate(d.lanCuoi.ngay)}: ${num(d.lanCuoi.giaTri)} ${esc(d.donVi)}`,
+    `上次 ${fmtDate(d.lanCuoi.ngay)}：${num(d.lanCuoi.giaTri)} ${esc(d.donVi)}`)
+  : bi('Chưa có số liệu', '暂无数据'));
+const nowLocal = () => {
+  const d = new Date();
+  return iso(d) + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+};
+/* Hộp "đang chờ gửi" dùng chung (phiên 8A) */
+function veQueueBox(el, loai, vi, zh, sauKhiGui) {
+  const draw = () => {
+    const n = queueOf(loai).length;
+    el.innerHTML = n ? `<div class="alert warn"><b>${n}</b><span>${bi(vi, zh)}</span>
+      <button class="btn mini primary" id="guiQ" style="margin-left:auto">${bi('Gửi ngay', '立即提交')}</button></div><div id="qmsg"></div>` : '';
+    const b = $('#guiQ', el);
+    if (!b) return;
+    b.onclick = async () => {
+      let pin = pinNho();
+      if (!pin) pin = String(prompt('Nhập mã PIN để gửi / 请输入PIN码') || '').trim();
+      if (!pin) return;
+      b.disabled = true; b.textContent = '…';
+      const res = await flushQueue(pin);
+      if (res.sent) nhoPin(pin);
+      const msg = $('#qmsg', el);
+      if (msg) {
+        msg.innerHTML = res.left
+          ? msgBad(res.needPin ? bi('Sai mã PIN — thử lại', 'PIN码错误 — 请重试')
+            : bi('Còn ' + res.left + ' bản ghi chưa gửi được: ' + esc(res.err?.message || ''), '还有 ' + res.left + ' 条未提交'))
+          : `<p class="note">${bi('Đã gửi xong ' + res.sent + ' bản ghi', '已提交 ' + res.sent + ' 条')}</p>`;
+      }
+      if (res.sent && sauKhiGui) sauKhiGui();
+      else draw();
+    };
+  };
+  draw();
+}
 
 /* ===================== Hợp đồng bảo trì: nhãn hạn ===================== */
 /* muc do máy chủ tính: het = đã hết hạn, sap = trong ngưỡng báo trước,
@@ -347,12 +450,15 @@ async function pageMachine(ma) {
   try { r = await fetchCached('m_' + ma.toUpperCase(), () => api.machine(ma)); }
   catch (e) {
     if (e.code !== 'NOT_FOUND') return errorBox(e);
-    view.innerHTML = `<div class="empty"><p class="plate">${esc(ma)}</p><p>${bi('Không tìm thấy máy có mã này', '未找到该编号的设备')}</p><a class="btn" href="#/">${bi('Về danh sách', '返回列表')}</a></div>`;
+    view.innerHTML = `<div class="empty"><p class="plate">${esc(ma)}</p><p>${bi('Không tìm thấy máy có mã này', '未找到该编号的设备')}</p>
+      <a class="btn" href="#/">${bi('Về danh sách', '返回列表')}</a>
+      <a class="btn" href="#/diem/${encodeURIComponent(ma)}">${bi('Thử mở như điểm đo', '按计量点打开')}</a></div>`;
     return;
   }
   const { machine: m, repairs, maintenance } = r.data, s = st(m.trangThai);
   const hds = r.data.contracts || [];
   const kds = r.data.inspections || [];
+  const dds = r.data.meters || [];
   const lsBt = r.data.maintHistory || [];
   const cl = r.data.checklist;
   const coKt = cl && (cl.muc || []).length > 0;
@@ -431,6 +537,10 @@ async function pageMachine(ma) {
     ${kds.length ? `<section class="block">
       <h2 class="sec">${bi('Kiểm định / hiệu chuẩn', '检验 / 校准')}<small>${bi(`${kds.length} giấy`, `${kds.length} 份`)}</small></h2>
       <div class="hd-list">${kds.map(k => kdCard(k)).join('')}</div>
+    </section>` : ''}
+    ${dds.length ? `<section class="block">
+      <h2 class="sec">${bi('Điểm đo gắn với máy', '本设备计量点')}<small>${dds.length}</small></h2>
+      <ul class="mlist">${dds.map(x => ddCard(x)).join('')}</ul>
     </section>` : ''}
     <section class="block">
       <h2 class="sec">${bi('Lịch sử sửa chữa', '维修记录')}
@@ -849,7 +959,7 @@ async function pageChecks() {
 
   const qbox = $('#qbox');
   const veQueue = () => {
-    const n = queueAll().length;
+    const n = queueOf('check').length;
     qbox.innerHTML = n ? `<div class="alert warn"><b>${n}</b>
       <span>${bi('lần kiểm tra chờ gửi', '次点检待提交')}</span>
       <button class="btn mini primary" id="guiQ" style="margin-left:auto">${bi('Gửi ngay', '立即提交')}</button></div>
@@ -925,7 +1035,7 @@ async function pageChecks() {
   $('#ngay').onchange = e => { ngay = e.target.value || today(); tai(); };
   veQueue();
   tai();
-  if (queueAll().length && navigator.onLine && pinNho()) {
+  if (queueOf('check').length && navigator.onLine && pinNho()) {
     flushQueue().then(res => { if (res.sent) { veQueue(); tai(); } });
   }
 }
@@ -949,6 +1059,8 @@ async function pageDash() {
   const hdHet = (hd.het || []).length, hdSap = (hd.sap || []).length;
   const kdt = d.kiemDinh || { het: [], sap: [], tong: 0 };
   const kdHet = (kdt.het || []).length, kdSap = (kdt.sap || []).length;
+  const cs = d.chiSo || null;
+  const csChua = cs ? (cs.chuaGhi || []).length : 0;
   const kt = d.kiemTra || null;
   const ktChua = kt ? (kt.chuaLam || []).length : 0;
   const ktXau = kt ? (kt.khongDat || []).length : 0;
@@ -970,6 +1082,9 @@ async function pageDash() {
       <span>${bi(kdHet ? `giấy kiểm định đã hết hạn (${kdHet}), sắp hết hạn (${kdSap})` : 'giấy kiểm định sắp hết hạn',
         kdHet ? `份检验证书已过期 (${kdHet})、即将到期 (${kdSap})` : '份检验证书即将到期')}</span>
       <span class="go">›</span></a>` : ''}
+    ${cs && cs.tong ? `<a class="alert ${csChua ? 'warn' : ''}" href="#/nang-luong"><b>${cs.daGhi}/${cs.tong}</b>
+      <span>${csChua ? bi(`điểm đo đã ghi chỉ số hôm nay — còn ${csChua} điểm chưa ghi`, `个计量点今天已抄表 — 还有 ${csChua} 个未抄`)
+        : bi('điểm đo đã ghi chỉ số hôm nay ✓', '个计量点今天已抄表 ✓')}</span><span class="go">›</span></a>` : ''}
     <div class="kpis">
       <div class="kpi"><b>${d.tongMay}</b>${bi('Tổng số máy', '设备总数')}</div>
       <div class="kpi ok"><b>${cnt('run')}</b>${bi('Đang chạy', '运行中')}</div>
@@ -1019,16 +1134,21 @@ function stopScan() {
   if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
   if (h5) { const x = h5; h5 = null; x.stop().catch(() => {}).finally(() => { try { x.clear(); } catch { /* bỏ qua */ } }); }
 }
+/* Tem máy: ...?ma=IN-01 · tem điểm đo (phiên 8A): ...?diem=DD-TONG
+   → {kind:'may'|'diem', ma} hoặc null */
 function parseCode(s) {
   s = String(s || '').trim();
-  if (!s) return '';
-  if (!isUrl(s)) return s.toUpperCase();
+  if (!s) return null;
+  if (!isUrl(s)) return { kind: 'may', ma: s.toUpperCase() };
   try {
     const u = new URL(s);
-    const m = u.searchParams.get('ma') || decodeURIComponent((u.hash.match(/^#\/may\/([^/?]+)/) || [])[1] || '');
-    return m.trim().toUpperCase();
-  } catch { return ''; }
+    const dd = (u.searchParams.get('diem') || decodeURIComponent((u.hash.match(/^#\/diem\/([^/?]+)/) || [])[1] || '')).trim();
+    if (dd) return { kind: 'diem', ma: dd.toUpperCase() };
+    const m = (u.searchParams.get('ma') || decodeURIComponent((u.hash.match(/^#\/may\/([^/?]+)/) || [])[1] || '')).trim();
+    return m ? { kind: 'may', ma: m.toUpperCase() } : null;
+  } catch { return null; }
 }
+const codeHash = c => (c ? '#/' + (c.kind === 'diem' ? 'diem' : 'may') + '/' + encodeURIComponent(c.ma) : '');
 async function pageScan() {
   view.innerHTML = `
     <h1 style="margin:0 0 12px">${bi('Quét mã QR', '扫描二维码')}</h1>
@@ -1036,7 +1156,7 @@ async function pageScan() {
     <p id="scanmsg" class="muted" style="text-align:center">${bi('Đang mở camera…', '正在打开摄像头…')}</p>
     <form class="manual" id="manual"><input id="mcode" placeholder="VD: IN-01" aria-label="Nhập mã máy" autocapitalize="characters">
       <button class="btn primary">${bi('Mở', '打开')}</button></form>`;
-  $('#manual').onsubmit = e => { e.preventDefault(); const c = parseCode($('#mcode').value); if (c) go('#/may/' + encodeURIComponent(c)); };
+  $('#manual').onsubmit = e => { e.preventDefault(); const c = parseCode($('#mcode').value); if (c) go(codeHash(c)); };
   const msg = $('#scanmsg');
   const still = () => location.hash === '#/quet';
   let done = false;
@@ -1045,7 +1165,7 @@ async function pageScan() {
     const c = parseCode(raw);
     if (!c) { msg.innerHTML = bi('Mã QR này không phải tem thiết bị', '此二维码不是设备标签'); return; }
     done = true; stopScan(); navigator.vibrate?.(80);
-    go('#/may/' + encodeURIComponent(c));
+    go(codeHash(c));
   };
   const camErr = () => { msg.innerHTML = bi('Không mở được camera. Hãy cho phép dùng camera (hoặc mở app bằng https) hoặc nhập mã bên dưới.', '无法打开摄像头，请允许使用摄像头或在下方输入编号。'); };
   if (!navigator.mediaDevices?.getUserMedia) return camErr();
@@ -1088,6 +1208,7 @@ async function pageScan() {
 const TILES = [
   ['#/hop-dong', '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h5"/>', 'Hợp đồng bảo trì', '维保合同'],
   ['#/kiem-dinh', '<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>', 'Kiểm định / hiệu chuẩn', '检验 / 校准'],
+  ['#/nang-luong', '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>', 'Chỉ số – Năng lượng', '能耗指标'],
   ['#/tem', '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM14 14h2v2h-2zM18 18h2v2h-2z"/>', 'In tem QR', '打印二维码标签'],
 ];
 function pageMore() {
@@ -1224,59 +1345,313 @@ async function pageInspections(loc) {
 
 /* ===================== In tem QR ===================== */
 const appUrlOk = () => /^https:\/\//.test(C.APP_URL || '') && !/ten-cong-ty/.test(C.APP_URL);
+/* Tem máy (?ma=) và tem điểm đo (?diem=, phiên 8A) */
+const TEM_LOAI = {
+  may: { vi: 'Máy / thiết bị', zh: '设备', param: 'ma', hintVi: 'Quét để xem lý lịch', hintZh: '扫码查看履历' },
+  diem: { vi: 'Điểm đo (công tơ)', zh: '计量点', param: 'diem', hintVi: 'Quét để ghi chỉ số', hintZh: '扫码抄表' },
+};
 async function pageLabels() {
   loading();
   let l;
   try { l = await fetchCached('list', api.list); } catch (e) { return errorBox(e); }
-  const list = l.data;
-  const areas = [...new Set(list.map(m => m.khuVuc).filter(Boolean))];
-  const chosen = new Set(list.map(m => m.ma));
+  const kho = { may: l.data.map(m => ({ ma: m.ma, ten: m.ten, khuVuc: m.khuVuc })), diem: null };
+  let loai = 'may';
+  const cur = () => kho[loai] || [];
+  let chosen = new Set(cur().map(m => m.ma));
   view.innerHTML = `
     <div class="no-print">
       <h1 style="margin:0 0 12px">${bi('In tem QR', '打印二维码标签')}</h1>
       ${appUrlOk() ? '' : msgBad(bi('Chưa sửa APP_URL trong config.js thành link app thật — tem in ra sẽ sai link. Đã khóa nút In.', '尚未在 config.js 中把 APP_URL 改为真实网址，标签链接将错误，已禁用打印。'))}
       <div class="tem-tools">
+        <label class="field"><span>${bi('Loại tem', '标签类型')}</span><select id="ft">${Object.entries(TEM_LOAI).map(([k, v]) => `<option value="${k}">${esc(v.vi)} / ${esc(v.zh)}</option>`).join('')}</select></label>
         <div class="row2">
-          <label class="field"><span>${bi('Khu vực', '区域')}</span><select id="fa"><option value="">Tất cả / 全部</option>${areas.map(a => `<option>${esc(a)}</option>`).join('')}</select></label>
+          <label class="field"><span>${bi('Khu vực', '区域')}</span><select id="fa"><option value="">Tất cả / 全部</option></select></label>
           <label class="field"><span>${bi('Cỡ tem', '标签尺寸')}</span><select id="fs"><option value="30">30 mm</option><option value="40" selected>40 mm</option><option value="50">50 mm</option></select></label>
         </div>
         <label class="field"><span>${bi('Lọc theo mã', '按编号筛选')}</span><input id="fc" type="search" placeholder="VD: IN"></label>
         <div class="card"><label class="picks" style="display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)"><input type="checkbox" id="all" checked> <b>${bi('Chọn tất cả', '全选')}</b></label><div class="picks" id="picks"></div></div>
         <button class="btn primary block" id="print" ${appUrlOk() ? '' : 'disabled'}>${bi('In tem', '打印')} (<span id="n"></span>)</button>
-        <p class="note">${bi('Link trong tem: ', '标签链接：')}<b>${esc(C.APP_URL)}?ma=…</b></p>
+        <p class="note" id="lk"></p>
         <p class="note">${bi('Tem decal PVC hoặc nhôm, chịu dầu và nhiệt. Không dán ở vị trí có thể rơi vào sản phẩm; đưa tem vào danh mục kiểm soát vật lạ.', '使用PVC或铝质标签，耐油耐热。勿贴在可能掉入产品的位置；纳入异物管控清单。')}</p>
       </div>
       <h2 class="sec">${bi('Xem trước', '预览')}</h2>
     </div>
     <div class="sheet" id="sheet"></div>`;
-  const fa = $('#fa'), fc = $('#fc'), fs = $('#fs');
-  const visible = () => list.filter(m => (!fa.value || m.khuVuc === fa.value) && (!fc.value.trim() || m.ma.toLowerCase().includes(fc.value.trim().toLowerCase())));
+  const ft = $('#ft'), fa = $('#fa'), fc = $('#fc'), fs = $('#fs');
+  const visible = () => cur().filter(m => (!fa.value || m.khuVuc === fa.value) && (!fc.value.trim() || m.ma.toLowerCase().includes(fc.value.trim().toLowerCase())));
   const drawSheet = () => {
     const v = visible().filter(m => chosen.has(m.ma));
+    const t = TEM_LOAI[loai];
     $('#n').textContent = v.length;
     const sheet = $('#sheet');
-    if (!v.length) { sheet.innerHTML = `<p class="empty">${bi('Chưa chọn máy nào', '未选择设备')}</p>`; return; }
+    if (!v.length) { sheet.innerHTML = `<p class="empty">${bi('Chưa chọn mục nào', '未选择项目')}</p>`; return; }
     sheet.innerHTML = v.map((m, i) => `<div class="tem" style="--s:${fs.value}mm">
       <div class="qr" id="qr${i}"></div>
       <div class="code">${LOGO}${esc(m.ma)}</div>
       <div class="name">${esc(m.ten)}</div>
-      <div class="hint">Quét để xem lý lịch<br>扫码查看履历</div></div>`).join('');
+      <div class="hint">${esc(t.hintVi)}<br>${esc(t.hintZh)}</div></div>`).join('');
     if (!window.QRCode) { sheet.insertAdjacentHTML('afterbegin', msgBad(bi('Chưa tải được bộ tạo mã QR (cần mạng).', '二维码生成组件未加载（需要网络）。'))); return; }
     const base = C.APP_URL.replace(/\/?$/, '/');
-    v.forEach((m, i) => new QRCode($('#qr' + i), { text: base + '?ma=' + encodeURIComponent(m.ma), width: 256, height: 256, correctLevel: QRCode.CorrectLevel.M }));
+    v.forEach((m, i) => new QRCode($('#qr' + i), { text: base + '?' + t.param + '=' + encodeURIComponent(m.ma), width: 256, height: 256, correctLevel: QRCode.CorrectLevel.M }));
   };
   const drawPicks = () => {
     const v = visible();
-    $('#picks').innerHTML = v.map(m => `<label><input type="checkbox" value="${esc(m.ma)}" ${chosen.has(m.ma) ? 'checked' : ''}> <span class="plate">${esc(m.ma)}</span> ${esc(m.ten)}</label>`).join('');
+    $('#picks').innerHTML = v.map(m => `<label><input type="checkbox" value="${esc(m.ma)}" ${chosen.has(m.ma) ? 'checked' : ''}> <span class="plate">${esc(m.ma)}</span> ${esc(m.ten)}</label>`).join('')
+      || `<p class="empty">${bi('Không có mục nào', '没有项目')}</p>`;
     $('#all').checked = v.length > 0 && v.every(m => chosen.has(m.ma));
+    $('#lk').innerHTML = bi('Link trong tem: ', '标签链接：') + `<b>${esc(C.APP_URL)}?${TEM_LOAI[loai].param}=…</b>`;
     drawSheet();
+  };
+  const veKhuVuc = () => {
+    const areas = [...new Set(cur().map(m => m.khuVuc).filter(Boolean))];
+    fa.innerHTML = `<option value="">Tất cả / 全部</option>` + areas.map(a => `<option>${esc(a)}</option>`).join('');
+  };
+  ft.onchange = async () => {
+    loai = ft.value;
+    if (!kho[loai]) {
+      $('#picks').innerHTML = `<p class="empty">${bi('Đang tải…', '加载中…')}</p>`;
+      try {
+        const rr = await fetchCached('meters', api.meters);
+        kho.diem = (rr.data || []).map(d => ({ ma: d.maDiem, ten: d.ten, khuVuc: d.khuVuc }));
+      } catch (e) { kho.diem = []; $('#picks').innerHTML = msgBad(errText(e)); }
+    }
+    chosen = new Set(cur().map(m => m.ma));
+    veKhuVuc();
+    drawPicks();
   };
   fa.onchange = drawPicks; fc.oninput = drawPicks; fs.onchange = drawSheet;
   $('#picks').onchange = e => { e.target.checked ? chosen.add(e.target.value) : chosen.delete(e.target.value); drawPicks(); };
   $('#all').onchange = e => { visible().forEach(m => e.target.checked ? chosen.add(m.ma) : chosen.delete(m.ma)); drawPicks(); };
   $('#print').onclick = () => window.print();
   if (!window.QRCode) window.addEventListener('load', drawSheet, { once: true });
+  veKhuVuc();
   drawPicks();
+}
+
+/* ===================== Chỉ số – Năng lượng (phiên 8A) ===================== */
+function khongThayDiem(MA) {
+  view.innerHTML = `<div class="empty"><p class="plate">${esc(MA)}</p>
+    <p>${bi('Không tìm thấy điểm đo có mã này. Khai báo ở tab DiemDo trong Google Sheets.', '未找到该计量点，请在 Google 表格 DiemDo 页登记。')}</p>
+    <a class="btn" href="#/nang-luong">${bi('Về danh sách điểm đo', '返回计量点列表')}</a>
+    <a class="btn" href="#/may/${encodeURIComponent(MA)}">${bi('Thử mở như mã máy', '按设备编号打开')}</a></div>`;
+}
+
+async function pageEnergy() {
+  loading();
+  let r;
+  try { r = await fetchCached('nl', api.energy); } catch (e) { return errorBox(e); }
+  const d = r.data, ds = d.diem || [], chua = d.chuaGhi || [];
+  const sap = [...ds].sort((a, b) => (b.thangNay || 0) - (a.thangNay || 0));
+  const maxThang = Math.max(1, ...ds.map(x => x.thangNay || 0));
+  view.innerHTML = `
+    <h1 style="margin:0 0 12px">${bi('Chỉ số – Năng lượng', '能耗指标')}</h1>
+    <div id="qbox"></div>
+    ${r.stale ? staleNote(r.stale) : ''}
+    ${!ds.length ? `<p class="empty card">${bi('Chưa khai báo điểm đo nào. Mở Google Sheets → tab DiemDo, nhập mã điểm đo, tên, loại, đơn vị, hệ số nhân.', '尚未登记计量点。请在 Google 表格 DiemDo 页录入编号、名称、类别、单位、倍率。')}</p>` : ''}
+    ${ds.length ? (chua.length
+      ? `<div class="alert warn"><b>${chua.length}</b><span>${bi('điểm đo chưa ghi chỉ số hôm nay', '个计量点今天未抄表')}</span></div>`
+      : `<div class="alert"><b>✓</b><span>${bi('Tất cả điểm đo đã ghi hôm nay', '所有计量点今天已抄表')}</span></div>`) : ''}
+    ${ds.length ? `<section class="block">
+      <h2 class="sec">${bi('Điện tiêu thụ 14 ngày', '近14天用电')}
+        <small>${bi('tháng này ' + num(d.tongDienThang) + ' kWh', '本月 ' + num(d.tongDienThang) + ' kWh')}</small></h2>
+      <div class="card">${svgBars((d.theoNgay || []).map(x => ({ label: String(x.ngay).slice(8), v: x.dien })), { unit: 'kWh', alt: 'Điện tiêu thụ 14 ngày' })}</div>
+    </section>` : ''}
+    ${ds.length ? `<section class="block">
+      <h2 class="sec">${bi('Điểm đo', '计量点')}<small>${bi(`${ds.length} điểm · tháng ${esc(d.thang || '')}`, `${ds.length} 个 · ${esc(d.thang || '')}`)}</small></h2>
+      <ul class="mlist">${sap.map(x => ddCard(x, maxThang)).join('')}</ul>
+    </section>` : ''}
+    <p class="note">${bi('Số liệu này phục vụ hồ sơ ISO 50001 (đường cơ sở EnB, chỉ số EnPI). Khi làm báo cáo phải đối chiếu với hóa đơn/công tơ của điện lực. Cột "Tiêu thụ" trong tab ChiSo do app tự tính — không sửa tay.', '本数据用于 ISO 50001 台账（能源基准 EnB、能源绩效参数 EnPI）。出报告时须与电力公司账单/电表核对。ChiSo 页"消耗量"列由应用自动计算，请勿手改。')}</p>`;
+  veQueueBox($('#qbox'), 'chiso', 'lần ghi chỉ số chờ gửi', '条抄表记录待提交', () => { store.del('tb3_nl'); route(); });
+  if (queueOf('chiso').length && navigator.onLine && pinNho()) {
+    flushQueue().then(res => { if (res.sent) { store.del('tb3_nl'); route(); } });
+  }
+}
+
+async function pageMeter(maDiem) {
+  const MA = String(maDiem).toUpperCase();
+  loading();
+  let r;
+  try { r = await fetchCached('dd_' + MA, () => api.meter(MA)); }
+  catch (e) {
+    if (e.code !== 'NOT_FOUND') return errorBox(e);
+    return khongThayDiem(MA);
+  }
+  const d = r.data, diem = d.diem, lc = d.lanCuoi;
+  const ngay14 = (d.theoNgay || []).slice(-14);
+  const ls = d.lichSu || [];
+  const daGhi = !!(lc && lc.ngay === today());
+  const nhan = daGhi ? { cls: 'ok', html: bi('Đã ghi hôm nay', '今天已抄表') }
+    : { cls: 'warn', html: lc ? bi('Lần cuối ' + fmtDate(lc.ngay), '上次 ' + fmtDate(lc.ngay)) : bi('Chưa có số liệu', '暂无数据') };
+  const wide = (vi, zh, v) => v ? `<div class="wide"><dt>${bi(vi, zh)}</dt><dd>${v}</dd></div>` : '';
+  view.innerHTML = `
+    <a class="back" href="#/nang-luong">‹ ${bi('Chỉ số – Năng lượng', '能耗指标')}</a>
+    ${r.stale ? staleNote(r.stale) : ''}
+    <div class="hero">
+      <div>
+        <span class="plate xl">${esc(diem.maDiem)}</span>
+        <h1>${esc(diem.ten)}</h1>
+        <p><span class="badge ${nhan.cls}">${nhan.html}</span>${diem.laSEU ? ` <span class="badge warn seu">SEU</span>` : ''}</p>
+      </div>
+    </div>
+    <section class="block">
+      <h2 class="sec">${bi('Thông tin điểm đo', '计量点信息')}</h2>
+      <dl class="info">
+        <div><dt>${bi('Loại', '类别')}</dt><dd>${esc(diem.loai) || '—'}</dd></div>
+        <div><dt>${bi('Đơn vị', '单位')}</dt><dd>${esc(diem.donVi) || '—'}</dd></div>
+        <div><dt>${bi('Hệ số nhân', '倍率')}</dt><dd>${num(diem.heSo)}</dd></div>
+        <div><dt>${bi('Khu vực', '区域')}</dt><dd>${esc(diem.khuVuc) || '—'}</dd></div>
+        ${wide('Thiết bị liên quan', '相关设备', diem.ma ? `<a href="#/may/${encodeURIComponent(diem.ma)}">${esc(diem.ma)}</a>` : '')}
+        ${wide('Ghi chú', '备注', esc(diem.ghiChu))}
+      </dl>
+    </section>
+    <section class="block">
+      <h2 class="sec">${bi('Lần ghi gần nhất', '最近抄表')}</h2>
+      <div class="card cs-last">
+        ${lc ? `<div><b class="cs-num">${num(lc.giaTri)} <small>${esc(diem.donVi)}</small></b>
+          <span class="s">${bi(fmtDate(lc.ngay) + ' ' + String(lc.thoiDiem || '').slice(11) + ' · ' + esc(lc.nguoi), fmtDate(lc.ngay) + ' · ' + esc(lc.nguoi))}</span>
+          ${lc.tieuThu != null ? `<span class="badge ok">${bi('Tiêu thụ ' + num(lc.tieuThu) + ' ' + esc(diem.donVi), '消耗 ' + num(lc.tieuThu) + ' ' + esc(diem.donVi))}</span>` : ''}</div>`
+          : `<p class="empty">${bi('Chưa có lần ghi nào', '暂无抄表记录')}</p>`}
+        <div class="cs-sum">
+          <div><b>${num(d.tongThangNay)}</b><span>${bi('tháng này (' + esc(diem.donVi) + ')', '本月 (' + esc(diem.donVi) + ')')}</span></div>
+          <div><b>${num(d.tong30)}</b><span>${bi('30 ngày qua', '近30天')}</span></div>
+        </div>
+      </div>
+    </section>
+    <section class="block">
+      <h2 class="sec">${bi('Tiêu thụ 14 ngày', '近14天消耗')}<small>${esc(diem.donVi)}</small></h2>
+      <div class="card">${svgBars(ngay14.map(x => ({ label: String(x.ngay).slice(8), v: x.tieuThu })), { unit: diem.donVi, alt: 'Tiêu thụ 14 ngày' })}</div>
+    </section>
+    <section class="block">
+      <h2 class="sec">${bi('Tiêu thụ 12 tháng', '近12个月消耗')}<small>${esc(diem.donVi)}</small></h2>
+      <div class="card">${svgBars((d.theoThang || []).map(x => ({ label: String(x.thang).slice(5), v: x.tieuThu })), { unit: diem.donVi, alt: 'Tiêu thụ 12 tháng' })}</div>
+    </section>
+    <section class="block">
+      <h2 class="sec">${bi('Lịch sử ghi chỉ số', '抄表记录')}<small>${bi(`${ls.length} lần gần nhất`, `最近 ${ls.length} 次`)}</small></h2>
+      ${ls.length ? `<ul class="cs-hist card">${ls.map(x => `<li>
+        <span><b>${num(x.giaTri)} <small>${esc(diem.donVi)}</small></b><br>
+          <span class="s">${esc(String(x.thoiDiem || '').replace(/^(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1'))} · ${esc(x.nguoi)}</span>
+          ${x.ghiChu ? `<br><span class="s">${esc(x.ghiChu)}</span>` : ''}
+          ${x.anh && x.anh.length ? `<span class="thumbs">${x.anh.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Ảnh mặt đồng hồ" loading="lazy" referrerpolicy="no-referrer"></a>`).join('')}</span>` : ''}</span>
+        <span class="badge ${x.tieuThu == null ? '' : 'ok'}">${x.tieuThu == null ? bi('—', '—') : bi('+' + num(x.tieuThu), '+' + num(x.tieuThu))}</span></li>`).join('')}</ul>`
+        : `<p class="empty card">${bi('Chưa có dữ liệu', '暂无数据')}</p>`}
+    </section>
+    <div class="sticky-cta"><a class="btn primary block" href="#/ghi-chi-so/${encodeURIComponent(diem.maDiem)}">+ ${bi('Ghi chỉ số', '抄表录入')}</a></div>`;
+}
+
+async function pageReading(maDiem) {
+  const MA = String(maDiem).toUpperCase();
+  loading();
+  let r;
+  try { r = await fetchCached('dd_' + MA, () => api.meter(MA)); }
+  catch (e) {
+    if (e.code !== 'NOT_FOUND') return errorBox(e);
+    return khongThayDiem(MA);
+  }
+  const diem = r.data.diem, lc = r.data.lanCuoi;
+  const draftKey = 'tb3_cs_' + MA;
+  const draft = store.get(draftKey, {});
+  const state = { idGui: draft.idGui || (MA + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6)) };
+  const ph = photoField();
+  const f = (vi, zh, input, req) => `<label class="field"><span>${bi(vi + (req ? ' <b class="req">*</b>' : ''), zh)}</span>${input}</label>`;
+
+  view.innerHTML = `
+    <a class="back" href="#/diem/${encodeURIComponent(MA)}">‹ ${bi('Quay lại điểm đo', '返回计量点')}</a>
+    <h1 style="margin:0 0 4px">${bi('Ghi chỉ số', '抄表录入')}</h1>
+    <p><span class="plate">${esc(diem.maDiem)}</span> ${esc(diem.ten)}</p>
+    <div class="card bt-head">
+      ${lc ? `<b>${bi('Lần trước: ' + num(lc.giaTri) + ' ' + esc(diem.donVi), '上次：' + num(lc.giaTri) + ' ' + esc(diem.donVi))}</b>
+        <span class="s">${esc(String(lc.thoiDiem || '').replace(/^(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1'))} · ${esc(lc.nguoi)}</span>`
+        : `<b>${bi('Chưa có lần ghi nào — số này sẽ là số gốc', '尚无记录 — 本次为起始读数')}</b>`}
+    </div>
+    <form class="form" id="cf" novalidate>
+      <label class="field"><span>${bi('Chỉ số trên đồng hồ (' + esc(diem.donVi) + ') <b class="req">*</b>', '表读数 (' + esc(diem.donVi) + ')')}</span>
+        <input class="big-num" name="giaTri" required inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(draft.giaTri || '')}"></label>
+      <div id="tt" class="cs-tt"></div>
+      ${f('Thời điểm ghi', '抄表时间', `<input type="datetime-local" name="thoiDiem" value="${nowLocal()}" max="${nowLocal()}">`)}
+      ${f('Người ghi', '抄表人', `<input name="nguoi" required maxlength="100" autocomplete="name" value="${esc(draft.nguoi || store.get('tb_nguoi', ''))}">`, 1)}
+      ${f('Ghi chú', '备注', `<input name="ghiChu" maxlength="200" placeholder="VD: thay đồng hồ / 例：换表" value="${esc(draft.ghiChu || '')}">`)}
+      ${ph.html}
+      ${f('Mã PIN', 'PIN码', `<input type="password" name="pin" required inputmode="numeric" autocomplete="off" maxlength="12" value="${esc(pinNho())}">`, 1)}
+      <p class="note">${bi('Ghi đúng số đang hiện trên mặt đồng hồ (không phải phần chênh lệch) — app tự tính tiêu thụ. Nếu vừa thay hoặc đặt lại đồng hồ, ghi chú "thay đồng hồ". Nên chụp ảnh mặt đồng hồ để đối chiếu. Đã gửi thì không sửa/xóa được trên app — sửa sai trong Google Sheets. Mất mạng vẫn ghi được, máy sẽ tự gửi khi có mạng.', '请填写表盘当前读数（不是差值），应用会自动计算消耗量。若刚换表或归零，请在备注写"换表"。建议拍表盘照片以便核对。提交后无法在应用内修改/删除 — 请在 Google 表格更正。无网络也可录入，联网后自动提交。')}</p>
+      <div id="err" role="alert"></div>
+      <button class="btn primary block" id="send">${bi('Lưu chỉ số', '保存读数')}</button>
+    </form>`;
+
+  const form = $('#cf'), err = $('#err'), btn = $('#send'), tt = $('#tt');
+  ph.bind();
+  const gt = form.giaTri;
+  const luu = () => store.set(draftKey, { idGui: state.idGui, giaTri: gt.value, nguoi: form.nguoi.value, ghiChu: form.ghiChu.value });
+  /* Xem trước phần chênh lệch ngay khi gõ */
+  const xemTruoc = () => {
+    const v = Number(String(gt.value).replace(',', '.'));
+    if (!lc || !isFinite(v) || !String(gt.value).trim()) { tt.innerHTML = ''; return; }
+    const ht = (v - lc.giaTri) * (Number(diem.heSo) || 1);
+    tt.innerHTML = ht < 0
+      ? msgBad(bi('Nhỏ hơn lần trước (' + num(lc.giaTri) + ') — đọc lại đồng hồ, hoặc ghi chú "thay đồng hồ".', '小于上次读数（' + num(lc.giaTri) + '）— 请重新读表，或在备注写"换表"。'))
+      : `<p class="note ok-note">${bi('Tiêu thụ tạm tính: ' + num(Math.round(ht * 100) / 100) + ' ' + esc(diem.donVi), '暂算消耗：' + num(Math.round(ht * 100) / 100) + ' ' + esc(diem.donVi))}</p>`;
+  };
+  gt.oninput = () => { luu(); xemTruoc(); };
+  form.nguoi.oninput = luu; form.ghiChu.oninput = luu;
+  xemTruoc();
+
+  const setBtn = html => { btn.innerHTML = html; };
+  const xong = (res, cho) => {
+    store.del(draftKey);
+    store.del('tb3_dd_' + MA); store.del('tb3_nl'); store.del('tb3_dash');
+    if (diem.ma) store.del('tb3_m_' + diem.ma);
+    view.innerHTML = `<div class="done">
+      <p>${cho ? bi('Đã lưu trên máy — sẽ tự gửi khi có mạng', '已保存在手机 — 联网后自动提交')
+        : bi(res.trung ? 'Lần ghi này đã được lưu trước đó' : 'Đã lưu chỉ số', res.trung ? '本次记录此前已保存' : '读数已保存')}</p>
+      ${res.maGhi ? `<span class="plate">${esc(res.maGhi)}</span>` : ''}
+      <p class="note">${bi(esc(diem.maDiem) + ' · ' + esc(diem.ten), esc(diem.maDiem))}</p>
+      ${res.tieuThu != null ? `<p><span class="badge ok">${bi('Tiêu thụ ' + num(res.tieuThu) + ' ' + esc(diem.donVi), '消耗 ' + num(res.tieuThu) + ' ' + esc(diem.donVi))}</span></p>` : ''}
+      ${res.canhBao ? msgBad(bi(esc(res.canhBao), '本次消耗异常偏高，请核对读数。')) : ''}
+      <a class="btn primary" href="#/quet">${bi('Quét điểm đo tiếp theo', '扫描下一个计量点')}</a>
+      <a class="btn" href="#/nang-luong">${bi('Về danh sách điểm đo', '返回计量点列表')}</a>
+      <a class="btn" href="#/diem/${encodeURIComponent(MA)}">${bi('Xem điểm đo này', '查看本计量点')}</a></div>`;
+    banner();
+  };
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (btn.disabled) return;
+    err.innerHTML = '';
+    const { pin, ...d } = Object.fromEntries(new FormData(form));
+    const giaTri = Number(String(d.giaTri || '').replace(',', '.'));
+    if (!String(d.giaTri || '').trim() || !isFinite(giaTri) || giaTri < 0) {
+      err.innerHTML = msgBad(bi('Chỉ số không hợp lệ — chỉ nhập số', '读数无效 — 只能填数字'));
+      gt.focus(); return;
+    }
+    if (!String(d.nguoi || '').trim() || !String(pin || '').trim()) {
+      err.innerHTML = msgBad(bi('Vui lòng điền đủ các ô có dấu *', '请填写所有带 * 的项目'));
+      return;
+    }
+    store.set('tb_nguoi', d.nguoi);
+    nhoPin(pin);
+    const data = { idGui: state.idGui, maDiem: diem.maDiem, giaTri,
+      thoiDiem: d.thoiDiem || nowLocal(), nguoi: d.nguoi, ghiChu: d.ghiChu || '', anh: [] };
+    const vaoHangDoi = async () => {
+      setBtn(bi('Đang lưu…', '正在保存…'));
+      const files = await ph.raw();
+      queueAdd({ loai: 'chiso', ma: diem.maDiem, data, files, t: Date.now() });
+      xong({ tieuThu: null }, true);
+    };
+    btn.disabled = true;
+    let step = 'photo';
+    try {
+      if (!navigator.onLine) return await vaoHangDoi();
+      const anh = await ph.upload(pin, diem.maDiem, setBtn);
+      step = 'save';
+      setBtn(bi('Đang gửi…', '正在提交…'));
+      const res = await api.addReading(pin, { ...data, anh });
+      xong(res, false);
+    } catch (e2) {
+      if (e2.code === 'NET') { try { return await vaoHangDoi(); } catch { /* rơi xuống báo lỗi */ } }
+      err.innerHTML = msgBad(sendErr(e2, step));
+    } finally {
+      if (btn.isConnected) { btn.disabled = false; setBtn(bi('Lưu chỉ số', '保存读数')); }
+    }
+  };
 }
 
 /* ===================== Điều hướng ===================== */
@@ -1293,6 +1668,9 @@ const routes = [
   [/^#\/hop-dong(?:\?loc=(\w+))?$/, pageContracts, 'more'],
   [/^#\/hop-dong\/(.+)$/, pageContract, 'more'],
   [/^#\/kiem-dinh(?:\?loc=(\w+))?$/, pageInspections, 'more'],
+  [/^#\/nang-luong$/, pageEnergy, 'more'],
+  [/^#\/diem\/(.+)$/, pageMeter, 'more'],
+  [/^#\/ghi-chi-so\/(.+)$/, pageReading, 'more'],
   [/^#\/tem$/, pageLabels, 'more']
 ];
 async function route() {
@@ -1322,8 +1700,11 @@ function tuGui() {
 (function start() {
   $('#co-vi').textContent = C.COMPANY_VI;
   $('#co-zh').textContent = C.COMPANY_ZH;
-  const ma = new URLSearchParams(location.search).get('ma');
+  const sp = new URLSearchParams(location.search);
+  const ma = sp.get('ma');
   if (ma) history.replaceState(null, '', location.pathname + '#/may/' + encodeURIComponent(ma.trim().toUpperCase()));
+  const dm = sp.get('diem');
+  if (!ma && dm) history.replaceState(null, '', location.pathname + '#/diem/' + encodeURIComponent(dm.trim().toUpperCase()));
   addEventListener('hashchange', route);
   addEventListener('online', () => { banner(); tuGui(); });
   addEventListener('offline', banner);

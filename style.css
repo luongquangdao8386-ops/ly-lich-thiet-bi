@@ -281,3 +281,37 @@ h2.sec small{font-weight:400;color:var(--ink-2);font-size:.82rem;text-align:righ
 .kd-card .s{font-size:.85rem;color:var(--ink-2)}
 .kd-card .info{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .kd-card .btn{min-height:44px;display:flex;align-items:center;justify-content:center}
+
+/* ---- Phiên 8A: chỉ số điện / giờ chạy máy ---- */
+.chart{display:block}
+.chart svg{display:block;width:100%;height:auto;color:var(--ink-2)}
+.big-num{font-size:1.9rem!important;font-weight:800;letter-spacing:.5px;text-align:center;padding:14px 12px!important}
+.cs-tt{margin:-4px 0 4px}
+.ok-note{color:var(--ok);font-weight:600}
+.cs-last{display:grid;gap:12px;padding:14px}
+.cs-num{font-size:1.6rem;line-height:1.2}
+.cs-num small{font-size:.9rem;font-weight:600;color:var(--ink-2)}
+.cs-last .s{display:block;color:var(--ink-2);font-size:.86rem;margin:2px 0 6px}
+.cs-sum{display:grid;grid-template-columns:1fr 1fr;gap:10px;border-top:1px solid var(--line);padding-top:10px}
+.cs-sum div{text-align:center}
+.cs-sum b{display:block;font-size:1.25rem}
+.cs-sum span{font-size:.8rem;color:var(--ink-2)}
+.cs-hist{list-style:none;margin:0;padding:0}
+.cs-hist li{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line)}
+.cs-hist li:last-child{border-bottom:0}
+.cs-hist .s{color:var(--ink-2);font-size:.84rem}
+.cs-hist .thumbs{display:flex;gap:6px;margin-top:6px}
+.cs-hist .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:8px}
+.badge.seu{font-size:.68rem;vertical-align:middle}
+.dd-bar{display:block;height:5px;border-radius:3px;background:var(--line);margin-top:6px;max-width:190px}
+.dd-bar em{display:block;height:100%;border-radius:3px;background:var(--bronze)}
+.mrow .t{display:block}
+.mrow .s{display:block}
+.dd-card{display:grid;gap:4px;padding:12px 14px;text-decoration:none;color:inherit}
+.dd-card:active{background:var(--paper)}
+.dd-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dd-badge{margin-left:auto}
+.dd-name{line-height:1.3}
+.dd-val{margin:2px 0 0}
+.dd-val b{font-size:1.15rem}
+.dd-card .s{font-size:.84rem;color:var(--ink-2)}
