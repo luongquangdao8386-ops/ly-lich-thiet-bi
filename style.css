@@ -269,3 +269,15 @@ h2.sec small{font-weight:400;color:var(--ink-2);font-size:.82rem;text-align:righ
 .kt-b.khong.on{border-color:var(--bad);background:var(--bad);color:#fff}
 .kt-gc textarea{width:100%;min-height:72px;padding:10px 12px;border:1.5px solid var(--bad);border-radius:10px;background:var(--surface);font-size:1rem;resize:vertical}
 @media (max-width:360px){.tabbar a{font-size:.66rem}}
+
+/* ---- Phiên 7: kiểm định / hiệu chuẩn ---- */
+.kd-card{padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.kd-card summary{display:grid;gap:6px;cursor:pointer;list-style:none;min-height:44px}
+.kd-card summary::-webkit-details-marker{display:none}
+.kd-card summary::after{content:'▾';position:absolute;right:16px;color:var(--ink-2)}
+.kd-card[open] summary::after{content:'▴'}
+.kd-card{position:relative}
+.kd-card summary .hd-top{padding-right:20px}
+.kd-card .s{font-size:.85rem;color:var(--ink-2)}
+.kd-card .info{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.kd-card .btn{min-height:44px;display:flex;align-items:center;justify-content:center}

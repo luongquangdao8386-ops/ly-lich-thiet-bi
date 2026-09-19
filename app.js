@@ -97,6 +97,9 @@ function normCl(cl) {
     lichSu: (cl.lichSu || []).map(normK) };
 }
 
+/* Kiểm định (phiên 7): thêm ngayKetThuc để dùng chung nhãn hạn với hợp đồng */
+const normKD = k => ({ ...k, ngayKetThuc: k.ngayHetHan });
+
 const api = {
   list: async () => (await get('list')).map(normM),
   async machine(ma) {
@@ -106,11 +109,13 @@ const api = {
       maintenance: (d.maintenance || []).map(normP),
       maintHistory: (d.maintHistory || []).map(normB),
       contracts: d.contracts || [],
+      inspections: (d.inspections || []).map(normKD),
       checklist: normCl(d.checklist)
     };
   },
   dashboard: () => get('dashboard'),
   contracts: () => get('contracts'),
+  inspections: async () => (await get('inspections')).map(normKD),
   checks: ngay => get('checks', { ngay }),
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
   completeMaint: (pin, data) => post({ action: 'completeMaint', pin, data }),
@@ -232,6 +237,37 @@ const hdCard = h => {
   </a>`;
 };
 
+/* ===================== Kiểm định / hiệu chuẩn (phiên 7) ===================== */
+/* Dùng lại hdHan(): đối tượng kiểm định đã có muc / conLai / ngayKetThuc / tinhTrang */
+const kdRow = (vi, zh, v) => v ? `<div class="wide"><dt>${bi(vi, zh)}</dt><dd>${esc(v)}</dd></div>` : '';
+/* Còn hạn dài: hiện số ngày còn lại cho dễ so sánh (khác hợp đồng) */
+function kdHan(k) {
+  if (k.muc === 'ok' && k.conLai != null) return { cls: 'ok', html: bi(`Còn ${k.conLai} ngày`, `剩 ${k.conLai} 天`) };
+  return hdHan(k);
+}
+function kdCard(k, mo) {
+  const han = kdHan(k), lo = viZh(k.loai), tt = viZh(k.tinhTrang);
+  return `<details class="kd-card"${mo ? ' open' : ''}>
+    <summary>
+      <div class="hd-top"><b>${esc(k.tenThietBi) || esc(k.ma)}</b><span class="badge ${han.cls}">${han.html}</span></div>
+      <div class="s">${bi(esc(lo.vi), esc(lo.zh))}${k.ma ? ` · <span class="plate">${esc(k.ma)}</span>` : ''}</div>
+      <div class="s">${bi('Hết hạn ' + (fmtDate(k.ngayHetHan) || '—'), '有效期至 ' + (fmtDate(k.ngayHetHan) || '—'))}</div>
+    </summary>
+    <dl class="info">
+      <div><dt>${bi('Ngày kiểm định', '检验日期')}</dt><dd>${fmtDate(k.ngayKD) || '—'}</dd></div>
+      <div><dt>${bi('Báo trước', '提前提醒')}</dt><dd>${esc(k.baoTruoc)} ${bi('ngày', '天')}</dd></div>
+      ${kdRow('Đơn vị thực hiện', '检验单位', k.donVi)}
+      ${kdRow('Số giấy CN / tem', '证书/标签编号', k.soGiay)}
+      <div class="wide"><dt>${bi('Tình trạng', '状态')}</dt><dd>${bi(esc(tt.vi), esc(tt.zh))}</dd></div>
+      ${kdRow('Ghi chú', '备注', k.ghiChu)}
+    </dl>
+    <div class="row2" style="margin-top:10px">
+      ${isUrl(k.taiLieu) ? `<a class="btn" href="${esc(k.taiLieu)}" target="_blank" rel="noopener">${bi('Mở giấy chứng nhận', '打开证书')}</a>` : ''}
+      ${k.ma ? `<a class="btn" href="#/may/${encodeURIComponent(k.ma)}">${bi('Xem lý lịch máy', '查看设备履历')}</a>` : ''}
+    </div>
+  </details>`;
+}
+
 /* ===================== Hiển thị chung ===================== */
 function banner() {
   const b = $('#banner');
@@ -316,6 +352,7 @@ async function pageMachine(ma) {
   }
   const { machine: m, repairs, maintenance } = r.data, s = st(m.trangThai);
   const hds = r.data.contracts || [];
+  const kds = r.data.inspections || [];
   const lsBt = r.data.maintHistory || [];
   const cl = r.data.checklist;
   const coKt = cl && (cl.muc || []).length > 0;
@@ -390,6 +427,10 @@ async function pageMachine(ma) {
     ${hds.length ? `<section class="block">
       <h2 class="sec">${bi('Hợp đồng bảo trì', '维保合同')}<small>${bi('thuê ngoài', '外包')}</small></h2>
       <div class="hd-list">${hds.map(hdCard).join('')}</div>
+    </section>` : ''}
+    ${kds.length ? `<section class="block">
+      <h2 class="sec">${bi('Kiểm định / hiệu chuẩn', '检验 / 校准')}<small>${bi(`${kds.length} giấy`, `${kds.length} 份`)}</small></h2>
+      <div class="hd-list">${kds.map(k => kdCard(k)).join('')}</div>
     </section>` : ''}
     <section class="block">
       <h2 class="sec">${bi('Lịch sử sửa chữa', '维修记录')}
@@ -906,6 +947,8 @@ async function pageDash() {
   const maxM = Math.max(1, ...months.map(x => x.soLan));
   const hd = d.hopDong || { het: [], sap: [], tong: 0 };
   const hdHet = (hd.het || []).length, hdSap = (hd.sap || []).length;
+  const kdt = d.kiemDinh || { het: [], sap: [], tong: 0 };
+  const kdHet = (kdt.het || []).length, kdSap = (kdt.sap || []).length;
   const kt = d.kiemTra || null;
   const ktChua = kt ? (kt.chuaLam || []).length : 0;
   const ktXau = kt ? (kt.khongDat || []).length : 0;
@@ -921,6 +964,11 @@ async function pageDash() {
       <b>${hdHet + hdSap}</b>
       <span>${bi(hdHet ? `hợp đồng đã hết hạn (${hdHet}), sắp hết hạn (${hdSap})` : `hợp đồng sắp hết hạn`,
         hdHet ? `份合同已过期 (${hdHet})、即将到期 (${hdSap})` : '份合同即将到期')}</span>
+      <span class="go">›</span></a>` : ''}
+    ${kdHet + kdSap ? `<a class="alert ${kdHet ? 'bad' : 'warn'}" href="#/kiem-dinh?loc=${kdHet ? 'het' : 'sap'}">
+      <b>${kdHet + kdSap}</b>
+      <span>${bi(kdHet ? `giấy kiểm định đã hết hạn (${kdHet}), sắp hết hạn (${kdSap})` : 'giấy kiểm định sắp hết hạn',
+        kdHet ? `份检验证书已过期 (${kdHet})、即将到期 (${kdSap})` : '份检验证书即将到期')}</span>
       <span class="go">›</span></a>` : ''}
     <div class="kpis">
       <div class="kpi"><b>${d.tongMay}</b>${bi('Tổng số máy', '设备总数')}</div>
@@ -1039,6 +1087,7 @@ async function pageScan() {
 /* ===================== Trang Thêm (更多) ===================== */
 const TILES = [
   ['#/hop-dong', '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h5"/>', 'Hợp đồng bảo trì', '维保合同'],
+  ['#/kiem-dinh', '<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>', 'Kiểm định / hiệu chuẩn', '检验 / 校准'],
   ['#/tem', '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM14 14h2v2h-2zM18 18h2v2h-2z"/>', 'In tem QR', '打印二维码标签'],
 ];
 function pageMore() {
@@ -1131,6 +1180,48 @@ async function pageContract(maHD) {
     <p class="note">${bi('Khi gia hạn: thêm một dòng hợp đồng mới (mã mới) trong Google Sheets, rồi đổi dòng này thành "Đã gia hạn" để giữ lịch sử hồ sơ.', '续签时：在 Google 表格中新增一行新合同（新编号），并将本行改为"已续签"，以保留记录。')}</p>`;
 }
 
+/* ===================== Danh sách kiểm định (phiên 7) ===================== */
+const KD_LOC = [['', 'Tất cả', '全部'], ['sap', 'Sắp hết hạn', '即将到期'],
+  ['het', 'Đã hết hạn', '已过期'], ['ok', 'Còn hạn', '有效期内']];
+async function pageInspections(loc) {
+  loading();
+  let r;
+  try { r = await fetchCached('kd', api.inspections); } catch (e) { return errorBox(e); }
+  const all = r.data || [];
+  const loais = [...new Set(all.map(k => k.loai).filter(Boolean))];
+  let f = KD_LOC.some(x => x[0] === loc) ? loc : '';
+  view.innerHTML = `
+    <h1 style="margin:0 0 12px">${bi('Kiểm định / hiệu chuẩn', '检验 / 校准')}</h1>
+    ${r.stale ? staleNote(r.stale) : ''}
+    <label class="search"><input id="q" type="search" autocomplete="off" placeholder="Tìm tên, mã máy, số giấy / 搜索名称、编号、证书号" aria-label="Tìm kiểm định"></label>
+    ${loais.length > 1 ? `<label class="field"><span>${bi('Loại kiểm định', '检验类别')}</span>
+      <select id="fl"><option value="">${'Tất cả / 全部'}</option>${loais.map(x => `<option>${esc(x)}</option>`).join('')}</select></label>` : ''}
+    <div class="chips" id="chips">${KD_LOC.map(([v, vi, zh]) => `<button data-v="${v}" class="${v === f ? 'on' : ''}">${bi(vi, zh)}</button>`).join('')}</div>
+    <div id="kdl"></div>
+    <p class="note">${bi('Nhập và sửa trong Google Sheets, tab KiemDinh. Kiểm định lại thì thêm dòng mới, đổi dòng cũ thành "Đã kiểm định lại".', '请在 Google 表格 KiemDinh 页录入。复检后新增一行，并将旧行改为"已复检"。')}</p>
+    <p class="note">${bi('App chỉ nhắc hạn. Danh mục thiết bị bắt buộc kiểm định và trách nhiệm pháp lý do công ty tự xác định theo quy định hiện hành.', '本应用仅作到期提醒。强制检验设备清单及法律责任由公司依现行法规自行确定。')}</p>`;
+  const q = $('#q'), fl = $('#fl'), box = $('#kdl');
+  const draw = () => {
+    const k = q.value.trim().toLowerCase();
+    const lo = fl ? fl.value : '';
+    const rows = all.filter(x => (!f || x.muc === f) && (!lo || x.loai === lo) &&
+      (!k || [x.tenThietBi, x.ma, x.soGiay, x.donVi, x.loai].join(' ').toLowerCase().includes(k)));
+    box.innerHTML = rows.length ? `<div class="hd-list">${rows.map(x => kdCard(x)).join('')}</div>`
+      : `<p class="empty card">${all.length ? bi('Không có giấy kiểm định phù hợp', '没有匹配的检验记录')
+        : bi('Chưa có dữ liệu. Nhập vào tab KiemDinh trong Google Sheets.', '暂无数据，请在 Google 表格 KiemDinh 页录入。')}</p>`;
+  };
+  q.oninput = draw;
+  if (fl) fl.onchange = draw;
+  $('#chips').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    f = b.dataset.v;
+    [...$('#chips').children].forEach(x => x.classList.toggle('on', x === b));
+    draw();
+  };
+  draw();
+}
+
 /* ===================== In tem QR ===================== */
 const appUrlOk = () => /^https:\/\//.test(C.APP_URL || '') && !/ten-cong-ty/.test(C.APP_URL);
 async function pageLabels() {
@@ -1201,6 +1292,7 @@ const routes = [
   [/^#\/them$/, pageMore, 'more'],
   [/^#\/hop-dong(?:\?loc=(\w+))?$/, pageContracts, 'more'],
   [/^#\/hop-dong\/(.+)$/, pageContract, 'more'],
+  [/^#\/kiem-dinh(?:\?loc=(\w+))?$/, pageInspections, 'more'],
   [/^#\/tem$/, pageLabels, 'more']
 ];
 async function route() {
