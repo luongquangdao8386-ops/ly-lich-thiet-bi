@@ -115,6 +115,7 @@ const api = {
       contracts: d.contracts || [],
       inspections: (d.inspections || []).map(normKD),
       meters: (d.meters || []).map(normDD),
+      dienNguon: d.dienNguon || null,
       checklist: normCl(d.checklist)
     };
   },
@@ -131,6 +132,8 @@ const api = {
     const d = await get('energy');
     return { ...d, diem: (d.diem || []).map(normDD) };
   },
+  power: () => get('power'),
+  panel: maTu => get('panel', { maTu }),
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
   completeMaint: (pin, data) => post({ action: 'completeMaint', pin, data }),
   addCheck: (pin, data) => post({ action: 'addCheck', pin, data }),
@@ -459,6 +462,7 @@ async function pageMachine(ma) {
   const hds = r.data.contracts || [];
   const kds = r.data.inspections || [];
   const dds = r.data.meters || [];
+  const dn = r.data.dienNguon;
   const lsBt = r.data.maintHistory || [];
   const cl = r.data.checklist;
   const coKt = cl && (cl.muc || []).length > 0;
@@ -502,6 +506,11 @@ async function pageMachine(ma) {
           <a class="btn mini" href="#/bao-tri/${encodeURIComponent(m.ma)}/${encodeURIComponent(x.hangMuc)}">✓ ${bi('Đã làm', '已完成')}</a></span></li>`).join('')}</ul>`
         : `<p class="empty card">${bi('Chưa có hạng mục bảo trì', '暂无保养项目')}</p>`}
     </section>
+    ${dn && (dn.tu || dn.lo) ? `<section class="block">
+      <h2 class="sec">${bi('Nguồn điện', '电源')}</h2>
+      ${nguonBox(dn)}
+      <p class="note">${LOTO}</p>
+    </section>` : ''}
     ${coKt ? `<section class="block">
       <h2 class="sec">${bi('Kiểm tra hằng ngày', '每日点检')}
         <small>${bi(`${cl.muc.length} mục · mẫu ${esc(cl.maMau)}`, `${cl.muc.length} 项 · 表 ${esc(cl.maMau)}`)}</small></h2>
@@ -1135,20 +1144,27 @@ function stopScan() {
   if (h5) { const x = h5; h5 = null; x.stop().catch(() => {}).finally(() => { try { x.clear(); } catch { /* bỏ qua */ } }); }
 }
 /* Tem máy: ...?ma=IN-01 · tem điểm đo (phiên 8A): ...?diem=DD-TONG
-   → {kind:'may'|'diem', ma} hoặc null */
+   tem tủ điện (phiên 9): ...?tu=MSB-01 · tem ổ cắm: ...?od=OC-01
+   → {kind:'may'|'diem'|'tu'|'od', ma} hoặc null */
+const KIND_PATH = { may: 'may', diem: 'diem', tu: 'tu-dien', od: 'o-cam' };
 function parseCode(s) {
   s = String(s || '').trim();
   if (!s) return null;
   if (!isUrl(s)) return { kind: 'may', ma: s.toUpperCase() };
   try {
     const u = new URL(s);
-    const dd = (u.searchParams.get('diem') || decodeURIComponent((u.hash.match(/^#\/diem\/([^/?]+)/) || [])[1] || '')).trim();
+    const lay = (p, re) => (u.searchParams.get(p) || decodeURIComponent((u.hash.match(re) || [])[1] || '')).trim();
+    const dd = lay('diem', /^#\/diem\/([^/?]+)/);
     if (dd) return { kind: 'diem', ma: dd.toUpperCase() };
-    const m = (u.searchParams.get('ma') || decodeURIComponent((u.hash.match(/^#\/may\/([^/?]+)/) || [])[1] || '')).trim();
+    const tu = lay('tu', /^#\/tu-dien\/([^/?]+)/);
+    if (tu) return { kind: 'tu', ma: tu.toUpperCase() };
+    const od = lay('od', /^#\/o-cam\/([^/?]+)/);
+    if (od) return { kind: 'od', ma: od.toUpperCase() };
+    const m = lay('ma', /^#\/may\/([^/?]+)/);
     return m ? { kind: 'may', ma: m.toUpperCase() } : null;
   } catch { return null; }
 }
-const codeHash = c => (c ? '#/' + (c.kind === 'diem' ? 'diem' : 'may') + '/' + encodeURIComponent(c.ma) : '');
+const codeHash = c => (c ? '#/' + (KIND_PATH[c.kind] || 'may') + '/' + encodeURIComponent(c.ma) : '');
 async function pageScan() {
   view.innerHTML = `
     <h1 style="margin:0 0 12px">${bi('Quét mã QR', '扫描二维码')}</h1>
@@ -1209,6 +1225,7 @@ const TILES = [
   ['#/hop-dong', '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h5"/>', 'Hợp đồng bảo trì', '维保合同'],
   ['#/kiem-dinh', '<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>', 'Kiểm định / hiệu chuẩn', '检验 / 校准'],
   ['#/nang-luong', '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>', 'Chỉ số – Năng lượng', '能耗指标'],
+  ['#/lo-dien', '<path d="M5 3h14v6H5zM9 9v4a3 3 0 0 0 3 3h0a3 3 0 0 1 3 3v2M9 5.5h.01M12 5.5h.01M15 5.5h.01"/>', 'Lộ điện – nguồn', '线路 – 电源'],
   ['#/tem', '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM14 14h2v2h-2zM18 18h2v2h-2z"/>', 'In tem QR', '打印二维码标签'],
 ];
 function pageMore() {
@@ -1349,12 +1366,14 @@ const appUrlOk = () => /^https:\/\//.test(C.APP_URL || '') && !/ten-cong-ty/.tes
 const TEM_LOAI = {
   may: { vi: 'Máy / thiết bị', zh: '设备', param: 'ma', hintVi: 'Quét để xem lý lịch', hintZh: '扫码查看履历' },
   diem: { vi: 'Điểm đo (công tơ)', zh: '计量点', param: 'diem', hintVi: 'Quét để ghi chỉ số', hintZh: '扫码抄表' },
+  tu: { vi: 'Tủ điện', zh: '配电柜', param: 'tu', hintVi: 'Quét để xem các lộ trong tủ', hintZh: '扫码查看柜内回路' },
+  ocam: { vi: 'Ổ cắm / điểm điện (tem nhỏ)', zh: '插座（小标签）', param: 'od', gon: true, co: '25' },
 };
 async function pageLabels() {
   loading();
   let l;
   try { l = await fetchCached('list', api.list); } catch (e) { return errorBox(e); }
-  const kho = { may: l.data.map(m => ({ ma: m.ma, ten: m.ten, khuVuc: m.khuVuc })), diem: null };
+  const kho = { may: l.data.map(m => ({ ma: m.ma, ten: m.ten, khuVuc: m.khuVuc })), diem: null, tu: null, ocam: null };
   let loai = 'may';
   const cur = () => kho[loai] || [];
   let chosen = new Set(cur().map(m => m.ma));
@@ -1365,8 +1384,8 @@ async function pageLabels() {
       <div class="tem-tools">
         <label class="field"><span>${bi('Loại tem', '标签类型')}</span><select id="ft">${Object.entries(TEM_LOAI).map(([k, v]) => `<option value="${k}">${esc(v.vi)} / ${esc(v.zh)}</option>`).join('')}</select></label>
         <div class="row2">
-          <label class="field"><span>${bi('Khu vực', '区域')}</span><select id="fa"><option value="">Tất cả / 全部</option></select></label>
-          <label class="field"><span>${bi('Cỡ tem', '标签尺寸')}</span><select id="fs"><option value="30">30 mm</option><option value="40" selected>40 mm</option><option value="50">50 mm</option></select></label>
+          <label class="field"><span id="falb">${bi('Khu vực', '区域')}</span><select id="fa"><option value="">Tất cả / 全部</option></select></label>
+          <label class="field"><span>${bi('Cỡ tem', '标签尺寸')}</span><select id="fs"><option value="20">20 mm</option><option value="25">25 mm</option><option value="30">30 mm</option><option value="40" selected>40 mm</option><option value="50">50 mm</option></select></label>
         </div>
         <label class="field"><span>${bi('Lọc theo mã', '按编号筛选')}</span><input id="fc" type="search" placeholder="VD: IN"></label>
         <div class="card"><label class="picks" style="display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)"><input type="checkbox" id="all" checked> <b>${bi('Chọn tất cả', '全选')}</b></label><div class="picks" id="picks"></div></div>
@@ -1385,11 +1404,11 @@ async function pageLabels() {
     $('#n').textContent = v.length;
     const sheet = $('#sheet');
     if (!v.length) { sheet.innerHTML = `<p class="empty">${bi('Chưa chọn mục nào', '未选择项目')}</p>`; return; }
-    sheet.innerHTML = v.map((m, i) => `<div class="tem" style="--s:${fs.value}mm">
+    sheet.innerHTML = v.map((m, i) => `<div class="tem${t.gon ? ' tem-gon' : ''}" style="--s:${fs.value}mm">
       <div class="qr" id="qr${i}"></div>
-      <div class="code">${LOGO}${esc(m.ma)}</div>
-      <div class="name">${esc(m.ten)}</div>
-      <div class="hint">${esc(t.hintVi)}<br>${esc(t.hintZh)}</div></div>`).join('');
+      <div class="code">${t.gon ? '' : LOGO}${esc(m.ma)}</div>
+      ${t.gon ? '' : `<div class="name">${esc(m.ten)}</div>
+      <div class="hint">${esc(t.hintVi)}<br>${esc(t.hintZh)}</div>`}</div>`).join('');
     if (!window.QRCode) { sheet.insertAdjacentHTML('afterbegin', msgBad(bi('Chưa tải được bộ tạo mã QR (cần mạng).', '二维码生成组件未加载（需要网络）。'))); return; }
     const base = C.APP_URL.replace(/\/?$/, '/');
     v.forEach((m, i) => new QRCode($('#qr' + i), { text: base + '?' + t.param + '=' + encodeURIComponent(m.ma), width: 256, height: 256, correctLevel: QRCode.CorrectLevel.M }));
@@ -1403,6 +1422,8 @@ async function pageLabels() {
     drawSheet();
   };
   const veKhuVuc = () => {
+    $('#falb').innerHTML = loai === 'tu' ? bi('Vị trí', '位置')
+      : loai === 'ocam' ? bi('Tủ cấp nguồn', '供电柜') : bi('Khu vực', '区域');
     const areas = [...new Set(cur().map(m => m.khuVuc).filter(Boolean))];
     fa.innerHTML = `<option value="">Tất cả / 全部</option>` + areas.map(a => `<option>${esc(a)}</option>`).join('');
   };
@@ -1411,10 +1432,17 @@ async function pageLabels() {
     if (!kho[loai]) {
       $('#picks').innerHTML = `<p class="empty">${bi('Đang tải…', '加载中…')}</p>`;
       try {
-        const rr = await fetchCached('meters', api.meters);
-        kho.diem = (rr.data || []).map(d => ({ ma: d.maDiem, ten: d.ten, khuVuc: d.khuVuc }));
-      } catch (e) { kho.diem = []; $('#picks').innerHTML = msgBad(errText(e)); }
+        if (loai === 'diem') {
+          const rr = await fetchCached('meters', api.meters);
+          kho.diem = (rr.data || []).map(d => ({ ma: d.maDiem, ten: d.ten, khuVuc: d.khuVuc }));
+        } else {
+          const rr = await fetchCached('dien', api.power);   // tủ điện + ổ cắm dùng chung một lần tải
+          kho.tu = (rr.data.tu || []).map(t => ({ ma: t.maTu, ten: t.ten, khuVuc: t.viTri }));
+          kho.ocam = (rr.data.lo || []).map(l => ({ ma: l.maDiem, ten: l.viTri || viZh(l.loai).vi, khuVuc: l.maTu }));
+        }
+      } catch (e) { kho[loai] = []; $('#picks').innerHTML = msgBad(errText(e)); }
     }
+    if (TEM_LOAI[loai].co) fs.value = TEM_LOAI[loai].co;
     chosen = new Set(cur().map(m => m.ma));
     veKhuVuc();
     drawPicks();
@@ -1654,6 +1682,175 @@ async function pageReading(maDiem) {
   };
 }
 
+/* ===================== Lộ điện / nguồn điện (phiên 9) ===================== */
+const LOTO = bi('An toàn: thông tin ở đây chỉ để tra cứu. Trước khi thao tác phải CẮT ĐIỆN, KHÓA – TREO THẺ (LOTO) và đo kiểm tra chắc chắn không còn điện. Sau khi cải tạo mạch phải cập nhật lại tab TuDien / LoDien.',
+  '安全提示：此处信息仅供查询。作业前必须断电、上锁挂牌（LOTO）并验电确认无电。线路改造后须及时更新 TuDien / LoDien 表。');
+
+/* Chuỗi tủ cấp nguồn phía trên (trên cùng trước) – tính ngay trên máy để dùng khi sóng yếu */
+function chuoiTu(ds, key) {
+  const map = {};
+  (ds || []).forEach(t => map[t.maTu] = t);
+  const chain = [];
+  let cur = map[key], guard = 0;
+  while (cur && cur.tuCap && map[cur.tuCap] && guard++ < 20) {
+    cur = map[cur.tuCap];
+    if (chain.some(x => x.maTu === cur.maTu)) break;
+    chain.unshift({ maTu: cur.maTu, ten: cur.ten, viTri: cur.viTri });
+  }
+  return chain;
+}
+/* MSB-01 › DB-IN-01 › tủ đang xem */
+function duongDanHtml(ds, cuoi) {
+  const items = (ds || []).map(t => `<a href="#/tu-dien/${encodeURIComponent(t.maTu)}">${esc(t.maTu)}</a>`);
+  if (cuoi) items.push(`<b>${esc(cuoi)}</b>`);
+  return items.length > 1 ? `<p class="path">${items.join(' <span>›</span> ')}</p>` : '';
+}
+const pwRow = (vi, zh, v) => (v ? `<div class="wide"><dt>${bi(vi, zh)}</dt><dd>${v}</dd></div>` : '');
+
+/* Khối "nguồn điện" dùng chung cho trang máy và trang ổ cắm */
+function nguonBox(dn) {
+  const tu = dn.tu, lo = dn.lo;
+  const day = lo && lo.coDay ? esc(lo.coDay) + (lo.chieuDai ? ` · ${esc(lo.chieuDai)} m` : '') : '';
+  return `<div class="card pw-box">
+    ${duongDanHtml(dn.duongDan, tu ? tu.maTu : '')}
+    <dl class="info">
+      ${tu ? pwRow('Tủ cấp nguồn', '供电柜', `<span class="plate">${esc(tu.maTu)}</span> ${esc(tu.ten)}`) : ''}
+      ${lo ? pwRow('Lộ / số CB', '回路编号', `<b>${esc(lo.lo) || '—'}</b>`) : ''}
+      ${lo ? pwRow('CB', '断路器', esc(lo.cb)) : ''}
+      ${day ? pwRow('Cỡ dây', '导线规格', day) : ''}
+      ${lo ? pwRow('Pha', '相位', esc(lo.pha)) : ''}
+      ${lo ? pwRow('Vị trí', '位置', esc(lo.viTri)) : ''}
+      ${tu ? pwRow('Vị trí tủ', '柜体位置', esc(tu.viTri)) : ''}
+      ${tu ? pwRow('CB tổng của tủ', '柜总断路器', esc(tu.cbTong)) : ''}
+      ${lo ? pwRow('Ghi chú', '备注', esc(lo.ghiChu)) : ''}
+    </dl>
+    ${tu ? `<a class="btn block" href="#/tu-dien/${encodeURIComponent(tu.maTu)}">${bi('Xem các lộ trong tủ', '查看柜内回路')}</a>` : ''}
+  </div>`;
+}
+
+const tuRow = t => `<li><a class="mrow" href="#/tu-dien/${encodeURIComponent(t.maTu)}">
+  <span class="plate">${esc(t.maTu)}</span>
+  <span><span class="t">${esc(t.ten) || '—'}</span><br><span class="s">${esc(t.viTri)}${t.cbTong ? ' · ' + esc(t.cbTong) : ''}</span></span></a></li>`;
+const loRow = l => `<li><a class="mrow" href="#/o-cam/${encodeURIComponent(l.maDiem)}">
+  <span class="plate">${esc(l.maDiem)}</span>
+  <span><span class="t">${esc(l.viTri) || esc(viZh(l.loai).vi)}</span><br>
+    <span class="s">${esc(l.maTu) || '—'} · ${esc(l.lo) || '—'}${l.cb ? ' · ' + esc(l.cb) : ''}</span></span></a></li>`;
+const LO_MAX = 40;
+const themNua = n => (n > 0 ? `<p class="note">${bi(`Còn ${n} mục nữa — gõ thêm để lọc`, `还有 ${n} 项 — 请输入更多字符筛选`)}</p>` : '');
+
+async function pagePower() {
+  loading();
+  let r;
+  try { r = await fetchCached('dien', api.power); } catch (e) { return errorBox(e); }
+  const tus = r.data.tu || [], los = r.data.lo || [];
+  view.innerHTML = `
+    <h1 style="margin:0 0 12px">${bi('Lộ điện – nguồn', '线路 – 电源')}</h1>
+    ${r.stale ? staleNote(r.stale) : ''}
+    ${(tus.length || los.length) ? `<button class="scan-hero" id="goScan">${ICON_SCAN}${bi('Quét tem trên tủ điện / ổ cắm', '扫描配电柜或插座标签')}</button>
+    <label class="search"><input id="q" type="search" autocomplete="off" placeholder="Mã ổ cắm, mã máy, tủ, vị trí / 搜索插座、设备、柜、位置" aria-label="Tìm lộ điện"></label>
+    <div id="kq"></div>`
+      : `<p class="empty card">${bi('Chưa có dữ liệu lộ dây. Mở Google Sheets → tab TuDien nhập các tủ điện, tab LoDien nhập ổ cắm / máy và lộ cấp nguồn.', '暂无线路数据。请在 Google 表格 TuDien 页录入配电柜，LoDien 页录入插座/设备及供电回路。')}</p>`}
+    <p class="note">${LOTO}</p>`;
+  if (!tus.length && !los.length) return;
+  $('#goScan').onclick = () => go('#/quet');
+  const q = $('#q'), box = $('#kq');
+  q.value = sessionStorage.getItem('tb_qd') || '';
+  const draw = () => {
+    sessionStorage.setItem('tb_qd', q.value);
+    const k = q.value.trim().toLowerCase();
+    const ft = tus.filter(t => !k || [t.maTu, t.ten, t.viTri, t.cbTong].join(' ').toLowerCase().includes(k));
+    const fl = los.filter(l => !k || [l.maDiem, l.loai, l.maTu, l.lo, l.cb, l.viTri, l.pha].join(' ').toLowerCase().includes(k));
+    if (!ft.length && !fl.length) { box.innerHTML = `<p class="empty">${bi('Không tìm thấy mục nào', '未找到匹配项')}</p>`; return; }
+    box.innerHTML = `
+      ${fl.length ? `<h2 class="area-h">${bi('Ổ cắm / máy', '插座 / 设备')} <small>${fl.length}</small></h2>
+        <ul class="mlist">${fl.slice(0, LO_MAX).map(loRow).join('')}</ul>${themNua(fl.length - LO_MAX)}` : ''}
+      ${ft.length ? `<h2 class="area-h">${bi('Tủ điện', '配电柜')} <small>${ft.length}</small></h2>
+        <ul class="mlist">${ft.slice(0, LO_MAX).map(tuRow).join('')}</ul>${themNua(ft.length - LO_MAX)}` : ''}`;
+  };
+  q.oninput = draw;
+  draw();
+}
+
+function khongThayDien(MA, laTu) {
+  view.innerHTML = `<div class="empty"><p class="plate">${esc(MA)}</p>
+    <p>${laTu ? bi('Không tìm thấy tủ điện có mã này. Nhập ở tab TuDien trong Google Sheets.', '未找到该配电柜，请在 Google 表格 TuDien 页录入。')
+      : bi('Không tìm thấy điểm điện có mã này. Nhập ở tab LoDien trong Google Sheets.', '未找到该用电点，请在 Google 表格 LoDien 页录入。')}</p>
+    <a class="btn" href="#/lo-dien">${bi('Về trang Lộ điện', '返回线路页')}</a>
+    <a class="btn" href="#/may/${encodeURIComponent(MA)}">${bi('Thử mở như mã máy', '按设备编号打开')}</a></div>`;
+}
+
+async function pagePanel(maTu) {
+  const MA = String(maTu).toUpperCase();
+  loading();
+  let r;
+  try { r = await fetchCached('tu_' + MA, () => api.panel(MA)); }
+  catch (e) {
+    if (e.code !== 'NOT_FOUND') return errorBox(e);
+    return khongThayDien(MA, true);
+  }
+  const d = r.data, t = d.tu, los = d.lo || [], con = d.tuCon || [];
+  const anh = imgUrl(t.anh), soDo = firstUrl(t.soDo);
+  view.innerHTML = `
+    <a class="back" href="#/lo-dien">‹ ${bi('Lộ điện – nguồn', '线路 – 电源')}</a>
+    ${r.stale ? staleNote(r.stale) : ''}
+    <div class="hero">
+      ${anh ? `<div class="photo"><a href="${esc(anh)}" target="_blank" rel="noopener"><img src="${esc(anh)}" alt="Ảnh tủ ${esc(t.maTu)}" loading="lazy" referrerpolicy="no-referrer"></a></div>` : ''}
+      <div>
+        <span class="plate xl">${esc(t.maTu)}</span>
+        <h1>${esc(t.ten) || bi('Tủ điện', '配电柜')}</h1>
+        ${duongDanHtml(d.duongDan, t.maTu)}
+      </div>
+    </div>
+    <section class="block">
+      <h2 class="sec">${bi('Thông tin tủ', '柜体信息')}</h2>
+      <dl class="info">
+        ${pwRow('Vị trí', '位置', esc(t.viTri))}
+        ${pwRow('CB tổng', '总断路器', esc(t.cbTong))}
+        ${pwRow('Cáp cấp vào', '进线电缆', esc(t.dayCap))}
+        ${pwRow('Điện áp', '电压', esc(t.dienAp))}
+        ${pwRow('Ghi chú', '备注', esc(t.ghiChu))}
+      </dl>
+      ${soDo ? `<p><a class="btn block" href="${esc(soDo)}" target="_blank" rel="noopener">${bi('Mở sơ đồ tủ', '打开柜体图纸')}</a></p>` : ''}
+    </section>
+    <section class="block">
+      <h2 class="sec">${bi('Các lộ trong tủ', '柜内回路')}<small>${los.length}</small></h2>
+      ${los.length ? `<ul class="mlist">${los.map(loRow).join('')}</ul>`
+        : `<p class="empty card">${bi('Chưa khai báo lộ nào cho tủ này (tab LoDien).', '本柜尚未登记回路（LoDien 页）。')}</p>`}
+    </section>
+    ${con.length ? `<section class="block">
+      <h2 class="sec">${bi('Tủ nhánh cấp từ tủ này', '下级配电柜')}<small>${con.length}</small></h2>
+      <ul class="mlist">${con.map(tuRow).join('')}</ul>
+    </section>` : ''}
+    <p class="note">${LOTO}</p>`;
+}
+
+async function pagePoint(maDiem) {
+  const MA = String(maDiem).toUpperCase();
+  loading();
+  let r;
+  try { r = await fetchCached('dien', api.power); } catch (e) { return errorBox(e); }
+  const lo = (r.data.lo || []).find(x => x.maDiem === MA);
+  if (!lo) return khongThayDien(MA, false);
+  const tu = (r.data.tu || []).find(x => x.maTu === lo.maTu) || null;
+  const l = viZh(lo.loai);
+  view.innerHTML = `
+    <a class="back" href="#/lo-dien">‹ ${bi('Lộ điện – nguồn', '线路 – 电源')}</a>
+    ${r.stale ? staleNote(r.stale) : ''}
+    <div class="hero">
+      <div>
+        <span class="plate xl">${esc(lo.maDiem)}</span>
+        <h1>${esc(lo.viTri) || esc(l.vi)}</h1>
+        <p class="s">${bi(esc(l.vi), esc(l.zh))}</p>
+      </div>
+    </div>
+    <section class="block">
+      <h2 class="sec">${bi('Nguồn điện', '电源')}</h2>
+      ${nguonBox({ tu, lo, duongDan: tu ? chuoiTu(r.data.tu, tu.maTu) : [] })}
+    </section>
+    ${/thiết bị|máy|设备/i.test(lo.loai) ? `<p><a class="btn block" href="#/may/${encodeURIComponent(lo.maDiem)}">${bi('Mở lý lịch máy cùng mã', '按同编号打开设备履历')}</a></p>` : ''}
+    <p class="note">${LOTO}</p>`;
+}
+
 /* ===================== Điều hướng ===================== */
 const routes = [
   [/^#?\/?$/, pageHome, 'home'],
@@ -1671,6 +1868,9 @@ const routes = [
   [/^#\/nang-luong$/, pageEnergy, 'more'],
   [/^#\/diem\/(.+)$/, pageMeter, 'more'],
   [/^#\/ghi-chi-so\/(.+)$/, pageReading, 'more'],
+  [/^#\/lo-dien$/, pagePower, 'more'],
+  [/^#\/tu-dien\/(.+)$/, pagePanel, 'more'],
+  [/^#\/o-cam\/(.+)$/, pagePoint, 'more'],
   [/^#\/tem$/, pageLabels, 'more']
 ];
 async function route() {
@@ -1705,6 +1905,10 @@ function tuGui() {
   if (ma) history.replaceState(null, '', location.pathname + '#/may/' + encodeURIComponent(ma.trim().toUpperCase()));
   const dm = sp.get('diem');
   if (!ma && dm) history.replaceState(null, '', location.pathname + '#/diem/' + encodeURIComponent(dm.trim().toUpperCase()));
+  /* Tem tủ điện / ổ cắm (phiên 9) */
+  const tuQR = sp.get('tu'), odQR = sp.get('od');
+  if (!ma && !dm && tuQR) history.replaceState(null, '', location.pathname + '#/tu-dien/' + encodeURIComponent(tuQR.trim().toUpperCase()));
+  if (!ma && !dm && !tuQR && odQR) history.replaceState(null, '', location.pathname + '#/o-cam/' + encodeURIComponent(odQR.trim().toUpperCase()));
   addEventListener('hashchange', route);
   addEventListener('online', () => { banner(); tuGui(); });
   addEventListener('offline', banner);

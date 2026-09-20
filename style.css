@@ -315,3 +315,18 @@ h2.sec small{font-weight:400;color:var(--ink-2);font-size:.82rem;text-align:righ
 .dd-val{margin:2px 0 0}
 .dd-val b{font-size:1.15rem}
 .dd-card .s{font-size:.84rem;color:var(--ink-2)}
+
+/* ---- Phiên 9: tra cứu lộ dây / nguồn điện ---- */
+.path{margin:6px 0 0;font-size:.88rem;color:var(--ink-2);display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.path a{color:var(--bronze);text-decoration:none;font-weight:600}
+.path b{color:var(--ink)}
+.path span{opacity:.5}
+.pw-box{padding:12px 14px;display:grid;gap:10px}
+.pw-box .info{margin:0}
+.pw-box .btn{min-height:44px;display:flex;align-items:center;justify-content:center}
+.pw-box .plate{margin-right:4px}
+.hero .s{color:var(--ink-2);font-size:.88rem;margin:4px 0 0}
+/* Tem nhỏ cho ổ cắm: chỉ có QR + mã */
+.tem-gon{gap:.5mm;padding:1mm}
+.tem-gon .qr{width:calc(var(--s) - 2mm)}
+.tem-gon .code{font-size:calc(var(--s) * .16)}
