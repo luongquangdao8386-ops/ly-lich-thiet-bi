@@ -116,7 +116,8 @@ const api = {
       inspections: (d.inspections || []).map(normKD),
       meters: (d.meters || []).map(normDD),
       dienNguon: d.dienNguon || null,
-      checklist: normCl(d.checklist)
+      checklist: normCl(d.checklist),
+      specs: d.specs || null
     };
   },
   dashboard: () => get('dashboard'),
@@ -134,6 +135,7 @@ const api = {
   },
   power: () => get('power'),
   panel: maTu => get('panel', { maTu }),
+  specs: ma => get('specs', { ma }),
   addRepair: (pin, data) => post({ action: 'addRepair', pin, data }),
   completeMaint: (pin, data) => post({ action: 'completeMaint', pin, data }),
   addCheck: (pin, data) => post({ action: 'addCheck', pin, data }),
@@ -446,6 +448,72 @@ async function pageHome() {
   }
 }
 
+/* ============ Thông số vận hành chuẩn (phiên 11) – chỉ xem ============
+   Dữ liệu nhập trong Google Sheets (tab ThongSo), phải có người duyệt.
+   App chỉ hiển thị, không so sánh tự động với số đo thực tế. */
+const TS_MO_HET = 8;    // ít hơn số này thì mở sẵn mọi nhóm
+const TS_CO_TIM = 15;   // nhiều hơn số này thì hiện ô tìm nhanh
+function tsDai(x) {
+  const mi = String(x.min ?? ''), ma = String(x.max ?? '');
+  if (!mi && !ma) return '';
+  const d = mi && ma ? `${mi} – ${ma}` : (mi ? `≥ ${mi}` : `≤ ${ma}`);
+  return d + (x.donVi ? ' ' + x.donVi : '');
+}
+function tsRow(x) {
+  const k = [x.thongSo, x.thongSoZh, x.giaTriChuan, x.donVi, x.dieuKien, x.nguon]
+    .join(' ').toLowerCase();
+  const dai = esc(tsDai(x));
+  const dk = esc(x.dieuKien), ng = esc(x.nguon), gc = esc(x.ghiChu);
+  return `<li class="ts-row" data-k="${esc(k)}">
+    <div class="ts-n">${bi(esc(x.thongSo || x.thongSoZh), esc(x.thongSoZh))}</div>
+    <p class="ts-v"><b>${esc(x.giaTriChuan) || '—'}</b>${x.donVi ? ` <span class="u">${esc(x.donVi)}</span>` : ''}</p>
+    ${dai ? `<p class="s ts-dai">${bi('Cho phép: ' + dai, '允许范围：' + dai)}</p>` : ''}
+    ${dk ? `<p class="s">${bi('Điều kiện: ' + dk, '条件：' + dk)}</p>` : ''}
+    ${gc ? `<p class="s">${bi('Ghi chú: ' + gc, '备注：' + gc)}</p>` : ''}
+    ${ng ? `<p class="s">${bi('Nguồn: ' + ng, '来源：' + ng)}</p>` : ''}</li>`;
+}
+function specsBox(ts) {
+  if (!ts || !ts.tong) return '';
+  const mo = ts.tong <= TS_MO_HET;
+  const cn = ts.capNhat ? fmtDate(ts.capNhat) : '';
+  const nd = esc(ts.nguoiDuyet || '');
+  return `<section class="block" id="tsBox">
+    <h2 class="sec">${bi('Thông số chuẩn', '标准参数')}
+      <small>${bi(`${ts.tong} thông số`, `${ts.tong} 项`)}</small></h2>
+    ${ts.tong > TS_CO_TIM ? `<label class="search"><input id="tsQ" type="search" autocomplete="off"
+      placeholder="Tìm thông số / 搜索参数" aria-label="Tìm thông số"></label>` : ''}
+    <div class="ts-groups">${ts.nhom.map((g, i) => { const n = viZh(g.ten); return `<details class="ts-g"${mo || i === 0 ? ' open' : ''}>
+      <summary>${bi(esc(n.vi), esc(n.zh))}<span class="n">${g.muc.length}</span></summary>
+      <ul class="ts-list">${g.muc.map(tsRow).join('')}</ul></details>`; }).join('')}</div>
+    <p class="empty" id="tsNone" hidden>${bi('Không có thông số phù hợp', '无匹配参数')}</p>
+    ${cn || nd ? `<p class="note">${bi(`Cập nhật ${cn || '—'}${nd ? ' · Người duyệt: ' + nd : ''}`,
+      `更新 ${cn || '—'}${nd ? ' · 审批人：' + nd : ''}`)}</p>` : ''}
+    <p class="note">${bi('Thông số chỉ sửa trong Google Sheets (tab ThongSo) và phải có người duyệt. Máy đang chạy sai thông số thì báo quản lý, không tự chỉnh.',
+      '参数只能在 Google 表格 ThongSo 页修改并须经审批。实际偏离标准时请上报，勿擅自调整。')}</p>
+  </section>`;
+}
+function bindSpecs() {
+  const q = $('#tsQ');
+  if (!q) return;
+  const gs = [...view.querySelectorAll('.ts-g')], none = $('#tsNone');
+  q.oninput = () => {
+    const k = q.value.trim().toLowerCase();
+    let hien = 0;
+    gs.forEach(g => {
+      let n = 0;
+      g.querySelectorAll('.ts-row').forEach(li => {
+        const m = !k || (li.dataset.k || '').includes(k);
+        li.hidden = !m;
+        if (m) n++;
+      });
+      g.hidden = n === 0;
+      if (k && n) g.open = true;
+      hien += n;
+    });
+    if (none) none.hidden = hien > 0;
+  };
+}
+
 /* ===================== Trang chi tiết máy ===================== */
 async function pageMachine(ma) {
   loading();
@@ -498,6 +566,7 @@ async function pageMachine(ma) {
       </dl>
       ${m.taiLieu ? `<p><a class="btn block" href="${esc(m.taiLieu)}" target="_blank" rel="noopener">${bi('Mở tài liệu máy', '打开设备资料')}</a></p>` : ''}
     </section>
+    ${specsBox(r.data.specs)}
     <section class="block">
       <h2 class="sec">${bi('Bảo trì định kỳ', '定期保养')}</h2>
       ${pms.length ? `<ul class="pm card">${pms.map(x => `<li>
@@ -568,6 +637,7 @@ async function pageMachine(ma) {
         : `<p class="empty card">${bi('Chưa có phiếu sửa chữa', '暂无维修记录')}</p>`}
     </section>
     <div class="sticky-cta"><a class="btn primary block" href="#/phieu/${encodeURIComponent(m.ma)}">+ ${bi('Tạo phiếu sửa chữa', '新建维修单')}</a></div>`;
+  bindSpecs();
   const more = $('#btMore');
   if (more) more.onclick = () => { view.querySelectorAll('.more-bt').forEach(el => { el.hidden = false; }); more.remove(); };
 }

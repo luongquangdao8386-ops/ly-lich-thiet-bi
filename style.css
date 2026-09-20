@@ -330,3 +330,23 @@ h2.sec small{font-weight:400;color:var(--ink-2);font-size:.82rem;text-align:righ
 .tem-gon{gap:.5mm;padding:1mm}
 .tem-gon .qr{width:calc(var(--s) - 2mm)}
 .tem-gon .code{font-size:calc(var(--s) * .16)}
+
+/* ---- Phiên 11: thông số vận hành chuẩn ---- */
+#tsBox .search{margin:0 0 10px}
+.ts-groups{display:grid;gap:10px}
+.ts-g{position:relative;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.ts-g summary{display:flex;align-items:center;gap:8px;min-height:48px;padding:0 34px 0 14px;
+  cursor:pointer;list-style:none;font-weight:700}
+.ts-g summary::-webkit-details-marker{display:none}
+.ts-g summary::after{content:'▾';position:absolute;right:14px;color:var(--ink-2)}
+.ts-g[open] summary::after{content:'▴'}
+.ts-g summary .n{margin-left:auto;font-weight:600;font-size:.82rem;color:var(--ink-2)}
+.ts-list{list-style:none;margin:0;padding:0 14px 8px}
+.ts-row{padding:10px 0;border-top:1px solid var(--line)}
+.ts-list .ts-row:first-child{border-top:0}
+.ts-n{line-height:1.3}
+.ts-v{margin:3px 0 0}
+.ts-v b{font-size:1.2rem;font-variant-numeric:tabular-nums}
+.ts-v .u{color:var(--ink-2);font-weight:600}
+.ts-row .s{margin:3px 0 0;font-size:.82rem;color:var(--ink-2)}
+.ts-dai{font-weight:600}

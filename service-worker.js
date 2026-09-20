@@ -1,4 +1,4 @@
-const CACHE = 'tb-v10';
+const CACHE = 'tb-v11';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest',
   'icons/logo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 const NO_CACHE = ['script.google.com', 'googleusercontent.com', 'drive.google.com'];
